@@ -1,0 +1,59 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "xdiagram",
+  "version": "0.1.0",
+  "identifier": "com.xdiagram.app",
+  "build": {
+    "beforeDevCommand": "npm run start",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist/xdiagram/browser"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "xdiagram",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "headerImage": "installer/nsis-header.bmp",
+        "sidebarImage": "installer/nsis-sidebar.bmp"
+      },
+      "wix": {
+        "bannerPath": "installer/wix-banner.bmp",
+        "dialogImagePath": "installer/wix-dialog.bmp"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDBCNUJFMjE0QjNERENBQTQKUldTa3l0MnpGT0piQy9mRUV6VElvL1F0YUtNay9VSFBxMWJiaHdBZGYvZXcvakd2VTJ1VzlpVkUK",
+      "endpoints": [
+        "https://github.com/YOUR-ACCOUNT/xdiagram/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

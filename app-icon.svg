@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- xdiagram app icon: the toolbar mark (two tables and a relationship) in white on accent blue.
+       Regenerate the platform icons with: npx tauri icon app-icon.svg -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3d7ff2" />
+      <stop offset="1" stop-color="#2a60c8" />
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#bg)" />
+  <g transform="translate(512 512) scale(30) translate(-12 -12)">
+    <rect x="2" y="3" width="9" height="7" rx="1.5" fill="#ffffff" />
+    <rect x="13" y="14" width="9" height="7" rx="1.5" fill="#ffffff" />
+    <path d="M11 6.5h3.5v11H13" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round" />
+  </g>
+</svg>

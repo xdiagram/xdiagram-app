@@ -1,0 +1,190 @@
+<div class="backdrop" (click)="close()"></div>
+<section class="dialog" appDraggableDialog role="dialog" aria-modal="true" aria-labelledby="conn-title">
+  <aside class="saved">
+    <div class="saved-head">
+      <span>Connections</span>
+      <button type="button" class="link" (click)="startNew()">+ New</button>
+    </div>
+    <ul>
+      @for (p of profiles.profiles(); track p.id) {
+        <li>
+          <button type="button" [class.active]="p.id === selectedId()" (click)="select(p)">
+            <span class="p-name">{{ label(p) }}</span>
+            <span class="p-meta"><span class="p-engine">{{ engineShort(p.engine) }}</span> {{ meta(p) }}</span>
+          </button>
+        </li>
+      } @empty {
+        <li class="none">No saved connections yet.</li>
+      }
+    </ul>
+  </aside>
+
+  <form class="form" (ngSubmit)="connect()" autocomplete="off">
+    <h2 id="conn-title">{{ selectedId() ? "Edit connection" : "New connection" }}</h2>
+
+    <div class="engines" role="radiogroup" aria-label="Database engine">
+      @for (e of engines; track e.value) {
+        <button type="button" role="radio" [attr.aria-checked]="draft.engine === e.value" [class.on]="draft.engine === e.value"
+          (click)="setEngine(e.value)">{{ e.label }}</button>
+      }
+    </div>
+
+    <label class="full">
+      <span>Paste a connection URL <em>(optional)</em></span>
+      <input name="url" [ngModel]="urlText" (ngModelChange)="onUrlChange($event)"
+        [placeholder]="urlPlaceholder[draft.engine]" spellcheck="false" />
+    </label>
+
+    <label class="full">
+      <span>Name</span>
+      <input name="name" [(ngModel)]="draft.name" [placeholder]="label(draft)" />
+    </label>
+
+    @if (draft.engine === "sqlite") {
+      <div class="row">
+        <label class="grow">
+          <span>Database file</span>
+          <input name="path" [(ngModel)]="draft.path" placeholder="C:\path\to\database.db" spellcheck="false" />
+        </label>
+        <button type="button" class="browse" (click)="pickFile()">Browse…</button>
+      </div>
+      <p class="hint">The file is opened read-only.</p>
+    } @else {
+      <div class="row">
+        <label class="grow">
+          <span>Host</span>
+          <input name="host" [(ngModel)]="draft.host" required spellcheck="false" />
+        </label>
+        <label class="port">
+          <span>Port</span>
+          <input name="port" type="number" min="1" max="65535" [(ngModel)]="draft.port" required />
+        </label>
+      </div>
+
+      <div class="row">
+        <label class="grow">
+          <span>Database</span>
+          <input name="database" [(ngModel)]="draft.database" [required]="draft.engine === 'mysql'" spellcheck="false" />
+        </label>
+        <label class="grow">
+          <span>User</span>
+          <input name="user" [(ngModel)]="draft.user" required spellcheck="false" />
+        </label>
+      </div>
+
+      <div class="row">
+        <label class="grow">
+          <span>Password</span>
+          <input name="password" type="password" [(ngModel)]="password"
+            [placeholder]="hasStoredPassword() ? 'Saved in system keychain' : ''" />
+        </label>
+        <label class="grow">
+          <span>{{ draft.engine === "mssql" ? "Encryption" : "SSL" }}</span>
+          <select name="ssl" [(ngModel)]="draft.sslMode">
+            @for (m of sslModes(); track m.value) {
+              <option [value]="m.value">{{ m.label }}</option>
+            }
+          </select>
+        </label>
+      </div>
+
+      <fieldset class="ssh">
+        <legend>
+          <label class="check">
+            <input type="checkbox" name="sshOn" [checked]="!!draft.ssh" (change)="toggleSsh($any($event.target).checked)" />
+            <span>Connect through an SSH tunnel</span>
+          </label>
+        </legend>
+        @if (draft.ssh; as ssh) {
+          <div class="row">
+            <label class="grow">
+              <span>SSH server</span>
+              <input name="sshHost" [(ngModel)]="ssh.host" required spellcheck="false" placeholder="bastion.example.com" />
+            </label>
+            <label class="port">
+              <span>Port</span>
+              <input name="sshPort" type="number" min="1" max="65535" [(ngModel)]="ssh.port" />
+            </label>
+          </div>
+          <div class="row">
+            <label class="grow">
+              <span>SSH user</span>
+              <input name="sshUser" [(ngModel)]="ssh.user" required spellcheck="false" />
+            </label>
+            <label class="grow">
+              <span>Sign in with</span>
+              <select name="sshAuth" [(ngModel)]="ssh.auth">
+                <option value="password">Password</option>
+                <option value="key">Private key file</option>
+              </select>
+            </label>
+          </div>
+          @if (ssh.auth === "key") {
+            <div class="row">
+              <label class="grow">
+                <span>Private key file</span>
+                <input name="sshKey" [(ngModel)]="ssh.keyPath" spellcheck="false" placeholder="C:\Users\you\.ssh\id_ed25519" />
+              </label>
+              <button type="button" class="browse" (click)="pickKey()">Browse…</button>
+            </div>
+          }
+          <label class="full">
+            <span>{{ ssh.auth === "key" ? "Key passphrase (if the key has one)" : "SSH password" }}</span>
+            <input name="sshSecret" type="password" [(ngModel)]="sshSecret"
+              [placeholder]="hasStoredSshSecret() ? 'Saved in system keychain' : ''" />
+          </label>
+          <p class="hint">Host and port above are the database as the SSH server sees it (often <code>localhost</code>).</p>
+        }
+      </fieldset>
+
+      <label class="check">
+        <input type="checkbox" name="remember" [(ngModel)]="rememberPassword" />
+        <span>Remember {{ draft.ssh ? "passwords" : "password" }} in the system keychain</span>
+      </label>
+      @if (draft.engine === "mssql") {
+        <label class="check">
+          <input type="checkbox" name="trustCert" [(ngModel)]="draft.trustCert" />
+          <span>Trust the server certificate (self-signed servers)</span>
+        </label>
+      }
+    }
+
+    @if (draft.engine === "postgres" || draft.engine === "mssql") {
+      <fieldset class="schemas">
+        <legend>Schemas</legend>
+        @if (availableSchemas().length) {
+          <div class="schema-list">
+            @for (s of availableSchemas(); track s) {
+              <label class="check">
+                <input type="checkbox" [checked]="draft.schemas.includes(s)" (change)="toggleSchema(s, $any($event.target).checked)" />
+                <span>{{ s }}</span>
+              </label>
+            }
+          </div>
+          <p class="hint">{{ draft.schemas.length ? "Only the checked schemas are read." : "None checked: all schemas are read." }}</p>
+        } @else {
+          <p class="hint">
+            {{ draft.schemas.length ? "Reading: " + draft.schemas.join(", ") : "All schemas." }}
+            Use <strong>Test</strong> to pick specific schemas.
+          </p>
+        }
+      </fieldset>
+    } @else if (draft.engine === "mysql") {
+      <p class="hint">MySQL reads the tables of the database above.</p>
+    }
+
+    @if (status(); as s) {
+      <p class="status" [class.ok]="s.ok" [class.bad]="!s.ok">{{ s.text }}</p>
+    }
+
+    <div class="actions">
+      @if (selectedId()) {
+        <button type="button" class="danger" (click)="remove()" [disabled]="!!busy()">Delete</button>
+      }
+      <span class="spacer"></span>
+      <button type="button" (click)="close()" [disabled]="!!busy()">Cancel</button>
+      <button type="button" (click)="test()" [disabled]="!!busy()">Test</button>
+      <button type="submit" class="primary" [disabled]="!!busy()">{{ busy() ?? "Connect" }}</button>
+    </div>
+  </form>
+</section>

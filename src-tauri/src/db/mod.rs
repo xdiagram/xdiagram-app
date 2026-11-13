@@ -1,0 +1,20 @@
+pub mod advisor;
+pub mod browse;
+pub mod connect;
+pub mod dispatch;
+pub mod introspect;
+pub mod mssql;
+pub mod mysql;
+pub mod profile;
+pub mod query;
+pub mod related;
+pub mod sql;
+pub mod sqlite;
+pub mod ssh;
+pub mod types;
+pub mod workload;
+pub mod workload_db;
+
+pub use connect::{connect, ConnectionInput, Engine, SslMode};
+pub use introspect::{fetch_schema_json, list_schemas};
+pub use types::DatabaseSchema;

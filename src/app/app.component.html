@@ -1,0 +1,229 @@
+<header class="toolbar">
+  <div class="brand" aria-label="xdiagram">
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="2" y="3" width="9" height="7" rx="1.5" fill="currentColor" opacity="0.9" />
+      <rect x="13" y="14" width="9" height="7" rx="1.5" fill="currentColor" opacity="0.9" />
+      <path d="M11 6.5h3.5v11H13" fill="none" stroke="currentColor" stroke-width="1.6" />
+    </svg>
+    <span>xdiagram</span>
+  </div>
+
+  <button type="button" class="btn primary" (click)="connectOpen.set(true)">Connect…</button>
+  <button type="button" class="btn" (click)="store.refresh()" [disabled]="store.source()?.kind !== 'db' || !!store.busy()"
+    title="Re-read the schema from the database (Ctrl+R)">Refresh</button>
+  <button type="button" class="btn" (click)="store.openFile()" title="Open a .dbml file, or import a SQL script / schema.rb (Ctrl+O)">Open…</button>
+
+  <span class="sep"></span>
+
+  <button type="button" class="btn xray" [class.on]="workload.enabled()" (click)="workload.toggle()"
+    [disabled]="!xrayAvailable() || !!store.busy()"
+    [title]="xrayAvailable() ? 'X-ray: show what the database actually does — joins without FKs, live activity, data facts (Ctrl+Shift+X)' : 'X-ray: PostgreSQL only'">
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <circle cx="8" cy="8" r="2" fill="currentColor" />
+      <path d="M8 1v2M8 13v2M1 8h2M13 8h2" stroke="currentColor" stroke-width="1.5" />
+    </svg>
+    X-ray
+  </button>
+  <div class="menu-wrap">
+    <button type="button" class="btn views" (click)="viewsOpen.set(!viewsOpen())" [attr.aria-expanded]="viewsOpen()"
+      [disabled]="!store.view().tables.length" title="Saved views: named subsets of tables, stored in the DBML">
+      View: {{ store.activeView() ?? "All tables" }} ▾
+    </button>
+    @if (viewsOpen()) {
+      <div class="menu-scrim" (click)="viewsOpen.set(false)"></div>
+      <div class="menu views-menu" role="menu">
+        <button type="button" role="menuitemradio" [attr.aria-checked]="!store.activeView()"
+          (click)="store.applyView(null); viewsOpen.set(false)">
+          <span>All tables</span><span class="check">{{ store.activeView() ? "" : "✓" }}</span>
+        </button>
+        @for (v of store.view().views; track v.name) {
+          <button type="button" role="menuitemradio" [attr.aria-checked]="store.activeView() === v.name"
+            (click)="store.applyView(v.name); viewsOpen.set(false)">
+            <span>{{ v.name }}</span>
+            <span class="check">{{ store.activeView() === v.name ? "✓" : (v.tables?.length ?? "all") }}</span>
+          </button>
+        }
+        <div class="menu-sep"></div>
+        <form class="save-view" (submit)="$event.preventDefault(); saveView(viewName)">
+          <input #viewName type="text" placeholder="Save visible tables as…" aria-label="View name" spellcheck="false" />
+          <button type="submit">Save</button>
+        </form>
+        @if (store.activeView(); as active) {
+          <button type="button" role="menuitem" (click)="store.saveView(active); viewsOpen.set(false)">Update “{{ active }}” with visible tables</button>
+          <button type="button" role="menuitem" class="danger" (click)="store.deleteView(active); viewsOpen.set(false)">Delete “{{ active }}”</button>
+        }
+      </div>
+    }
+  </div>
+  <button type="button" class="btn" (click)="store.autoArrange()" [disabled]="!store.view().tables.length"
+    title="Discard manual positions and lay out all tables again">Auto-arrange</button>
+  <div class="menu-wrap">
+    <button type="button" class="btn" (click)="exportOpen.set(!exportOpen())" [attr.aria-expanded]="exportOpen()"
+      [disabled]="!store.dbml().trim()">Export ▾</button>
+    @if (exportOpen()) {
+      <div class="menu-scrim" (click)="exportOpen.set(false)"></div>
+      <div class="menu" role="menu">
+        <button type="button" role="menuitem" (click)="export('png')">PNG image</button>
+        <button type="button" role="menuitem" (click)="export('svg')">SVG image</button>
+        <button type="button" role="menuitem" (click)="export('dbml')">DBML file <kbd>Ctrl+S</kbd></button>
+        <div class="menu-sep"></div>
+        <button type="button" role="menuitem" (click)="export('html')">Documentation (HTML)</button>
+        <button type="button" role="menuitem" (click)="export('md')">Documentation (Markdown)</button>
+        <div class="menu-sep"></div>
+        <div class="menu-label">SQL DDL</div>
+        @for (d of ddl.targets(); track d.value) {
+          <button type="button" role="menuitem" (click)="exportDdl(d.value)">{{ d.label }}</button>
+        }
+        <div class="menu-sep"></div>
+        <button type="button" role="menuitem" (click)="openSampleData()">Sample data (SQL)…</button>
+      </div>
+    }
+  </div>
+
+  <div class="source">
+    @if (store.busy(); as busy) {
+      <span class="spinner" aria-hidden="true"></span><span class="muted">{{ busy }}</span>
+      @if (store.busyOp()) {
+        <button type="button" class="btn small" (click)="store.cancelBusy()" title="Stop this operation">Cancel</button>
+      }
+    } @else if (store.source(); as src) {
+      <span class="src-kind">{{ src.kind === "db" ? engineName(src.engine) : "File" }}</span>
+      <span class="src-label" [title]="src.detail">{{ src.label }}</span>
+    }
+  </div>
+
+  <button type="button" class="btn icon" (click)="settingsOpen.set(true)" title="Settings (Ctrl+,)" aria-label="Settings">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+    </svg>
+  </button>
+  <button type="button" class="btn icon" (click)="toggleEditor()" [class.on]="store.editorOpen()"
+    [title]="editorToggleTitle()" aria-label="Toggle DBML editor" [attr.aria-pressed]="store.editorOpen()">
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" />
+      <path d="M5.5 2.5v11" stroke="currentColor" />
+    </svg>
+    @if (!store.editorOpen() && store.diagnostics().length) {
+      <i class="problem-dot" aria-hidden="true"></i>
+    }
+  </button>
+  <button type="button" class="btn icon" (click)="toggleSidebar()" [class.on]="sidebarOpen()"
+    [title]="sidebarOpen() ? 'Hide side panel' : 'Show side panel'" aria-label="Toggle side panel" [attr.aria-pressed]="sidebarOpen()">
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" />
+      <path d="M10.5 2.5v11" stroke="currentColor" />
+    </svg>
+  </button>
+</header>
+
+<app-tab-strip />
+
+@if (updates.available(); as u) {
+  @if (!updates.dismissed() || updates.progress() !== null) {
+    <div class="banner info" role="status">
+      @if (updates.installError(); as err) {
+        <span>xdiagram {{ u.version }} could not be installed: {{ err }}. Nothing was changed.</span>
+      } @else {
+        <span>xdiagram {{ u.version }} is available{{ updateProgress(updates.progress()) }}</span>
+      }
+      <button type="button" class="text-btn" (click)="installUpdate()" [disabled]="updates.progress() !== null">{{ updates.installError() ? "Try again" : "Install &amp; restart" }}</button>
+      @if (updates.progress() === null) {
+        <button type="button" class="text-btn" (click)="updates.dismissed.set(true)">Later</button>
+      }
+    </div>
+  }
+}
+
+@if (store.externalChange(); as change) {
+  <div class="banner warn" role="alert">
+    <span>{{ store.source()?.label }} changed on disk while you were editing it.</span>
+    <button type="button" class="text-btn" (click)="store.reloadFromDisk(change.contents)">Reload from disk</button>
+    <button type="button" class="text-btn" (click)="store.externalChange.set(null)" title="Your version is kept; saving overwrites the file">Keep mine</button>
+  </div>
+}
+
+@if (store.error() ?? workload.error(); as err) {
+  <div class="banner" role="alert">
+    <span>{{ err }}</span>
+    <button type="button" (click)="dismissErrors()" aria-label="Dismiss">×</button>
+  </div>
+}
+
+<main class="workspace" [class.resizing]="resizing()"
+  [style.grid-template-columns]="(store.editorOpen() ? editorWidth() + 'px 5px ' : '') + 'minmax(0, 1fr)' + (sidebarOpen() ? ' 290px' : '')">
+  <app-dbml-editor [class.collapsed]="!store.editorOpen()" />
+  @if (store.editorOpen()) {
+    <div class="splitter" (pointerdown)="startResize($event)" role="separator" aria-orientation="vertical"
+      aria-label="Resize editor"></div>
+  }
+  <div class="canvas-col">
+    <app-diagram />
+    @if (browser.open()) {
+      <app-data-drawer />
+    }
+  </div>
+  @if (sidebarOpen()) {
+    <aside class="side">
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" [attr.aria-selected]="sidebarTab() === 'tables'"
+          [class.active]="sidebarTab() === 'tables'" (click)="sidebarTab.set('tables')">Tables</button>
+        <button type="button" role="tab" [attr.aria-selected]="sidebarTab() === 'xray'"
+          [class.active]="sidebarTab() === 'xray'" (click)="sidebarTab.set('xray')">
+          X-ray
+          @if (workload.enabled()) {
+            <i class="dot" aria-label="on"></i>
+          }
+        </button>
+        <button type="button" role="tab" [attr.aria-selected]="sidebarTab() === 'lint'"
+          [class.active]="sidebarTab() === 'lint'" (click)="sidebarTab.set('lint')">
+          Lint
+          @if (lint.counts().error + lint.counts().warning; as n) {
+            <span class="badge" [class.err]="lint.counts().error > 0"
+              [attr.aria-label]="lint.counts().error + ' errors, ' + lint.counts().warning + ' warnings'">{{ n }}</span>
+          }
+        </button>
+      </div>
+      @if (sidebarTab() === "tables") {
+        <app-table-list />
+      } @else if (sidebarTab() === "lint") {
+        <app-lint-panel />
+      } @else {
+        <app-workload-panel />
+      }
+    </aside>
+  }
+</main>
+
+@if (rowGraph.open()) {
+  <app-row-graph />
+}
+
+@if (store.notice(); as notice) {
+  <div class="toast" role="status">{{ notice }}</div>
+}
+
+@if (paletteOpen()) {
+  <app-command-palette [items]="paletteItems()" (closed)="paletteOpen.set(false)" />
+}
+
+@if (store.importRequest(); as req) {
+  <app-import-dialog [request]="req" (closed)="store.importRequest.set(null)" />
+}
+
+@if (store.sampleDataFor(); as s) {
+  <app-sample-data-dialog [table]="s.table" (closed)="store.sampleDataFor.set(null)" />
+}
+
+@if (settingsOpen()) {
+  <app-settings-dialog (closed)="settingsOpen.set(false)" (about)="settingsOpen.set(false); aboutOpen.set(true)" />
+}
+
+@if (aboutOpen()) {
+  <app-about-dialog (closed)="aboutOpen.set(false)" />
+}
+
+@if (connectOpen()) {
+  <app-connection-dialog (closed)="connectOpen.set(false)" />
+}
