@@ -44,7 +44,8 @@ every change made on the canvas is an edit to it.
     the canvas draws only what is on screen, in less detail when zoomed out (see below).
 - **Data browser** (read-only, every engine), a bottom drawer with three views:
   - **Rows:** paging, sorting and per-column filters. Foreign-key values are links to the parent row,
-    "Referenced by" opens the child rows, and a breadcrumb trail lets you go back.
+    "Referenced by" opens the child rows, and a breadcrumb trail lets you go back. Right-click a row
+    to follow a key, copy a value, copy the row as JSON or show its related data.
   - **Profile:** per-column statistics from a sample of up to 20,000 rows (random `TABLESAMPLE` on
     PostgreSQL and SQL Server, the first rows on MySQL and SQLite).
     - Shows nulls, distinct values, range, lengths and the most common values.
@@ -58,6 +59,22 @@ every change made on the canvas is an edit to it.
     - Pick columns, filter, choose INNER or LEFT joins, and copy the SQL in the connection's dialect.
     - Run it read-only, a page at a time. The query is built from a structured request: identifiers
       are checked against the catalog, and values are always parameters.
+- **Related data** (read-only, every engine): a map of one row and the rows linked to it, opened
+  from a row of the data browser (right-click, or its ⇄ button).
+  - The row is a card in the middle. The rows it references are on the left and the rows that
+    reference it on the right, with edges like the diagram's. X-ray's discovered relationships
+    count too, drawn dashed.
+  - **+** on a card loads that row's own links, so you can keep following keys. A row reached by
+    two paths is one card. Cards already placed never move when the map grows; drag them, or use
+    **Tidy** to lay them out again.
+  - Cards show key columns and the first few others ("+N more columns" shows the rest). Each
+    relationship loads 10 rows first, then **More** (up to 100) or **All in grid**.
+  - **Open in grid** shows a card's row in the data browser, keeping the breadcrumb trail.
+    **Start here** makes a card the centre of a new map.
+  - Closing the map hides it; **Related data** in the drawer brings it back. Picking another row
+    replaces it, and switching database discards it.
+  - Each expansion is one batch of lookups on one connection. Values are compared in the column's
+    own type rather than as text, so foreign-key and primary-key indexes are used.
 - **Schema lint** (side panel tab, every engine and DBML files): FK type mismatches, FKs to
   non-unique columns, missing primary keys, unindexed FKs, duplicate or redundant indexes, reserved
   words, possible missing FKs (with an **Add Ref** quick fix), nullable FKs (opt-in), naming-style
