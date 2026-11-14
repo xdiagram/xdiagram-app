@@ -58,6 +58,8 @@ interface Editing {
     @if (tree().items.length) {
       <button type="button" class="clear" (click)="emit({ t: 'group', id: tree().id, op: 'and', items: [] })">Clear</button>
     }
+    <button type="button" class="text" [class.on]="textOpen()" [attr.aria-pressed]="textOpen()" (click)="textToggle.emit()"
+      title="Edit the whole filter as text, e.g. role = admin and (created_at: last 7 days or email ~ gmail)">Text</button>
     <input type="search" class="search" [class.on]="!!searchText()" placeholder="Search all columns" spellcheck="false" [value]="searchText()"
       [title]="searchTitle" aria-label="Search all columns (Enter applies)" (keydown.enter)="search($any($event.target).value)"
       (search)="$any($event.target).value || search('')" />
@@ -121,6 +123,9 @@ interface Editing {
     .match { border-style: solid; color: var(--text); font-weight: 600; }
     .clear { border: 0; color: var(--text-muted); }
     .add:disabled { opacity: 0.5; cursor: default; }
+    .text { font: 600 11px var(--mono); border: 1px solid var(--border); background: none; color: var(--text-muted); border-radius: 14px;
+      padding: 2px 8px; cursor: pointer; }
+    .text.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
     .search { margin-left: auto; width: 190px; font: inherit; font-size: 12px; border: 1px solid var(--border); border-radius: 14px;
       padding: 2px 9px; background: var(--input-bg); color: var(--text); }
     .search.on { border-color: var(--accent); }
@@ -147,6 +152,9 @@ export class FilterBarComponent {
   readonly tree = input.required<GroupNode>();
   readonly issues = input<FilterIssue[]>([]);
   readonly treeChange = output<GroupNode>();
+  /** Whether the expression box is shown (the Text button). */
+  readonly textOpen = input(false);
+  readonly textToggle = output<void>();
 
   protected readonly editing = signal<Editing | null>(null);
   private readonly issueById = computed(() => new Map(this.issues().map((i) => [i.node, i.message])));

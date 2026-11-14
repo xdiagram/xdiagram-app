@@ -6,7 +6,7 @@ import type { VRef } from "../diagram/view-model";
 import { kindOf } from "../filter/kinds";
 import { type FilterNode, type GroupNode, LIMITS, type SortKey, type WireNode } from "../filter/model";
 import { parseQuick } from "../filter/quick-syntax";
-import { rememberTable } from "../filter/memory";
+import { rememberExpression, rememberTable } from "../filter/memory";
 import { addNode, emptyRoot, fromEquality, hasActive, setColumnFilter, toggleOff, withoutNav } from "../filter/tree";
 import { treeIssues } from "../filter/validate";
 import { toWire, wireKey } from "../filter/wire";
@@ -115,6 +115,7 @@ export class BrowserStore {
         this.profiles.set(new Map());
         this.tableColumns.set(new Map());
         this.counts.clear();
+        this.expressionHistory.set([]);
       });
     });
   }
@@ -145,6 +146,35 @@ export class BrowserStore {
       this.history.set([{ ...cur, where: remembered.where ?? cur.where, sort: remembered.sort ?? [] }]);
     }
     void this.load();
+  }
+
+  /** Expressions used in this database, newest first (the expression box offers them). */
+  readonly expressionHistory = signal<string[]>([]);
+
+  async loadExpressionHistory(): Promise<void> {
+    const key = this.workspace.databaseKey();
+    const history = key ? (await this.memory.get(key)).history : [];
+    if (key === this.workspace.databaseKey()) this.expressionHistory.set(history);
+  }
+
+  rememberExpression(text: string): void {
+    const key = this.workspace.databaseKey();
+    if (!key) return;
+    void this.memory.update(key, (m) => {
+      const next = rememberExpression(m, text);
+      if (key === this.workspace.databaseKey()) this.expressionHistory.set(next.history);
+      return next;
+    });
+  }
+
+  /** Values of a column known without a query (cached profile, the page shown), for suggestions. */
+  knownValues(column: string): string[] {
+    const id = this.current()?.tableId;
+    const fromProfile = (id && this.profiles().get(id)?.columns.find((c) => c.name === column)?.top.map((t) => t.value)) || [];
+    const r = this.result();
+    const ci = r?.columns.findIndex((c) => c.name === column) ?? -1;
+    const fromPage = r && ci >= 0 ? r.rows.map((row) => row[ci]).filter((v): v is string => v !== null && v.length <= 80) : [];
+    return [...new Set([...fromProfile, ...fromPage])].slice(0, 40);
   }
 
   /** Keeps the current table's filter and sort for next time (not the FK-navigation conditions). */

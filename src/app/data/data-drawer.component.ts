@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal, viewChild } from "@angular/core";
+import { ChangeDetectionStrategy, Component, Injector, afterNextRender, computed, effect, inject, signal, untracked, viewChild } from "@angular/core";
 
 import { displayTable, type VRef } from "../diagram/view-model";
 import { QUICK_HELP } from "../filter/help";
@@ -9,6 +9,7 @@ import { printQuick } from "../filter/quick-syntax";
 import { nodeText } from "../filter/printer";
 import { hasActive, singleColumn } from "../filter/tree";
 import { BrowseLocation, BrowserStore } from "../state/browser.store";
+import { ExpressionBoxComponent } from "./filter/expression-box.component";
 import { FilterBarComponent } from "./filter/filter-bar.component";
 import { ProfileViewComponent } from "./profile-view.component";
 import { QueryViewComponent } from "./query-view.component";
@@ -17,6 +18,15 @@ import { RowGraphStore } from "../state/row-graph.store";
 import { WorkspaceStore } from "../state/workspace.store";
 
 const HEIGHT_KEY = "xdiagram.dataDrawerHeight";
+const TEXT_KEY = "xdiagram.filterTextOpen";
+
+function readTextOpen(): boolean {
+  try {
+    return localStorage.getItem(TEXT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 function readHeight(): number {
   try {
@@ -29,7 +39,7 @@ function readHeight(): number {
 /** Bottom drawer listing a page of rows; foreign keys are links (read-only). */
 @Component({
   selector: "app-data-drawer",
-  imports: [ProfileViewComponent, QueryViewComponent, FilterBarComponent],
+  imports: [ProfileViewComponent, QueryViewComponent, FilterBarComponent, ExpressionBoxComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { "[style.height.px]": "height()", "(document:keydown.escape)": "rowMenu.set(null); colMenu.set(null); picked.set(null)" },
   template: `
@@ -84,7 +94,11 @@ function readHeight(): number {
     @if (store.current(); as cur) {
       @if (store.columns().length) {
         <app-filter-bar [columns]="store.columns()" [engine]="store.engine()" [tree]="cur.where" [issues]="store.issues()"
-          (treeChange)="store.setWhere($event)" />
+          (treeChange)="store.setWhere($event)" [textOpen]="textOpen()" (textToggle)="toggleText()" />
+        @if (textOpen()) {
+          <app-expression-box [columns]="store.columns()" [engine]="store.engine()" [tree]="cur.where" [history]="store.expressionHistory()"
+            [values]="knownValues" (treeChange)="store.setWhere($event)" (used)="store.rememberExpression($event)" />
+        }
       }
     }
     @if (store.error(); as err) {
@@ -322,6 +336,14 @@ export class DataDrawerComponent {
   protected readonly store = inject(BrowserStore);
   protected readonly rowGraph = inject(RowGraphStore);
   private readonly workspace = inject(WorkspaceStore);
+  private readonly injector = inject(Injector);
+
+  constructor() {
+    // The box offers the expressions used before in this database.
+    effect(() => {
+      if (this.textOpen() && this.store.open()) untracked(() => void this.store.loadExpressionHistory());
+    });
+  }
   protected readonly height = signal(readHeight());
   /** Row menu (right-click, or the ↳ button): `col` is the clicked column, if any. */
   protected readonly rowMenu = signal<{ x: number; y: number; maxH: number; row: number; col: number | null } | null>(null);
@@ -378,6 +400,22 @@ export class DataDrawerComponent {
   protected readonly quickHelp = QUICK_HELP;
 
   protected readonly filtered = computed(() => hasActive(this.store.current()?.where ?? null));
+
+  /** The expression box under the filter bar (remembered on this computer). */
+  protected readonly textOpen = signal(readTextOpen());
+  private readonly exprBox = viewChild(ExpressionBoxComponent);
+  protected readonly knownValues = (column: string) => this.store.knownValues(column);
+
+  protected toggleText(): void {
+    const open = !this.textOpen();
+    this.textOpen.set(open);
+    try {
+      localStorage.setItem(TEXT_KEY, open ? "1" : "0");
+    } catch {
+      // Not kept: it opens closed next time.
+    }
+    if (open) afterNextRender(() => this.exprBox()?.focus(), { injector: this.injector });
+  }
 
   /** Matched text per cell (searches everywhere, contains / starts / ends / equals in their column); null: plain. */
   protected readonly marks = computed(() => {

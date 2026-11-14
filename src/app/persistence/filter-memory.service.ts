@@ -33,10 +33,18 @@ export class FilterMemoryService {
     return (await this.get(dbKey)).tables[tableId] ?? null;
   }
 
-  /** Changes a database's memory (applied in order, saved debounced). */
+  /**
+   * Changes a database's memory, saved debounced. Changes chain: each one sees the ones made
+   * before it, even while the file is still being read.
+   */
   async update(dbKey: string, change: (m: DbMemory) => DbMemory): Promise<void> {
-    const next = change(await this.get(dbKey));
-    this.cache.set(dbKey, Promise.resolve(next));
+    const base = this.get(dbKey);
+    const chained = base.then(change).catch((err) => {
+      console.error("Could not change the remembered filters", err);
+      return base;
+    });
+    this.cache.set(dbKey, chained);
+    const next = await chained;
     this.pending.set(dbKey, next);
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => void this.flush(), 800);
