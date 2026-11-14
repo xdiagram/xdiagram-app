@@ -6,6 +6,7 @@ import { printQuick } from "../filter/quick-syntax";
 import { nodeText } from "../filter/printer";
 import { hasActive, singleColumn } from "../filter/tree";
 import { BrowseLocation, BrowserStore } from "../state/browser.store";
+import { FilterBarComponent } from "./filter/filter-bar.component";
 import { ProfileViewComponent } from "./profile-view.component";
 import { QueryViewComponent } from "./query-view.component";
 import { QueryStore } from "../state/query.store";
@@ -25,7 +26,7 @@ function readHeight(): number {
 /** Bottom drawer listing a page of rows; foreign keys are links (read-only). */
 @Component({
   selector: "app-data-drawer",
-  imports: [ProfileViewComponent, QueryViewComponent],
+  imports: [ProfileViewComponent, QueryViewComponent, FilterBarComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { "[style.height.px]": "height()", "(document:keydown.escape)": "rowMenu.set(null)" },
   template: `
@@ -77,6 +78,12 @@ function readHeight(): number {
         <div class="loading">Sampling the table… <button type="button" class="cancel" (click)="store.cancel()">Cancel</button></div>
       }
     } @else {
+    @if (store.current(); as cur) {
+      @if (store.columns().length) {
+        <app-filter-bar [columns]="store.columns()" [engine]="store.engine()" [tree]="cur.where" [issues]="store.issues()"
+          (treeChange)="store.setWhere($event)" />
+      }
+    }
     @if (store.error(); as err) {
       <div class="error">{{ err }}</div>
     }

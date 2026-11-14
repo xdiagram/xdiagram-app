@@ -68,7 +68,12 @@ export class BrowserStore {
   readonly profileLoading = signal(false);
   readonly profileError = signal<string | null>(null);
   /** Columns seen per table this session (their kinds resolve relative dates before a load). */
-  private readonly columnsByTable = new Map<string, BrowseColumn[]>();
+  private readonly tableColumns = signal<ReadonlyMap<string, BrowseColumn[]>>(new Map());
+  /** The current table's columns (known after its first load, kept when a later load fails). */
+  readonly columns = computed(() => {
+    const id = this.current()?.tableId;
+    return (id && this.tableColumns().get(id)) || [];
+  });
   private readonly counts = new Map<string, CountState>();
   private seq = 0;
   private countSeq = 0;
@@ -92,10 +97,10 @@ export class BrowserStore {
     return src?.kind === "db" ? src.engine : null;
   });
 
-  /** Kind of each column of the current result. */
+  /** Kind of each column of the current table. */
   readonly kinds = computed(() => {
     const engine = this.engine();
-    return new Map((this.result()?.columns ?? []).map((c) => [c.name, kindOf(c, engine)] as const));
+    return new Map(this.columns().map((c) => [c.name, kindOf(c, engine)] as const));
   });
 
   constructor() {
@@ -105,7 +110,7 @@ export class BrowserStore {
       untracked(() => {
         this.close();
         this.profiles.set(new Map());
-        this.columnsByTable.clear();
+        this.tableColumns.set(new Map());
         this.counts.clear();
       });
     });
@@ -275,7 +280,7 @@ export class BrowserStore {
 
   /** The kind of a column of a table, from the latest result seen for that table. */
   private kindIn(tableId: string, column: string): ColKind | null {
-    const col = this.columnsByTable.get(tableId)?.find((c) => c.name === column);
+    const col = this.tableColumns().get(tableId)?.find((c) => c.name === column);
     return col ? kindOf(col, this.engine()) : null;
   }
 
@@ -317,7 +322,7 @@ export class BrowserStore {
         if (this.rowsOp === op) this.rowsOp = null;
       });
       if (seq !== this.seq) return;
-      this.columnsByTable.set(loc.tableId, result.columns);
+      this.tableColumns.update((m) => new Map(m).set(loc.tableId, result.columns));
       this.result.set(result);
       void this.loadCount(loc, filter, result);
     } catch (err) {
