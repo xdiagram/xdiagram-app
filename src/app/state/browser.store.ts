@@ -6,7 +6,7 @@ import type { VRef } from "../diagram/view-model";
 import { kindOf } from "../filter/kinds";
 import { type FilterNode, type GroupNode, LIMITS, type SortKey, type WireNode } from "../filter/model";
 import { parseQuick } from "../filter/quick-syntax";
-import { emptyRoot, fromEquality, hasActive, setColumnFilter } from "../filter/tree";
+import { addNode, emptyRoot, fromEquality, hasActive, setColumnFilter } from "../filter/tree";
 import { treeIssues } from "../filter/validate";
 import { toWire, wireKey } from "../filter/wire";
 import { SettingsService } from "../persistence/settings.service";
@@ -214,6 +214,17 @@ export class BrowserStore {
   /** Replaces the current filter tree (back to the first page). */
   setWhere(where: GroupNode): void {
     this.replace({ where, offset: 0 });
+  }
+
+  /** Adds a condition (cell menu "Filter by"). */
+  addCondition(node: FilterNode): void {
+    const cur = this.current();
+    if (cur) this.setWhere(addNode(cur.where, node));
+  }
+
+  /** Sets the sort keys (column header menu). */
+  setSort(sort: SortKey[]): void {
+    this.replace({ sort: sort.slice(0, LIMITS.sortKeys), offset: 0 });
   }
 
   /** A column box's text (quick syntax) becomes that column's filter; empty text removes it. */

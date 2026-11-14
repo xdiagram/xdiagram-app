@@ -1,7 +1,9 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from "@angular/core";
+import { ChangeDetectionStrategy, Component, computed, inject, signal, viewChild } from "@angular/core";
 
 import { displayTable, type VRef } from "../diagram/view-model";
 import { QUICK_HELP } from "../filter/help";
+import { isOrderedKind } from "../filter/kinds";
+import { newId, type Op } from "../filter/model";
 import { printQuick } from "../filter/quick-syntax";
 import { nodeText } from "../filter/printer";
 import { hasActive, singleColumn } from "../filter/tree";
@@ -28,7 +30,7 @@ function readHeight(): number {
   selector: "app-data-drawer",
   imports: [ProfileViewComponent, QueryViewComponent, FilterBarComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { "[style.height.px]": "height()", "(document:keydown.escape)": "rowMenu.set(null)" },
+  host: { "[style.height.px]": "height()", "(document:keydown.escape)": "rowMenu.set(null); colMenu.set(null); picked.set(null)" },
   template: `
     <div class="resize" (pointerdown)="startResize($event)" role="separator" aria-orientation="horizontal" aria-label="Resize data panel"></div>
     <header>
@@ -94,7 +96,8 @@ function readHeight(): number {
             <tr>
               <th class="act"></th>
               @for (c of r.columns; track c.name) {
-                <th (click)="store.toggleSort(c.name, $event.shiftKey)" [title]="c.typeName + ' — click to sort, Shift+click to sort by several columns'">
+                <th (click)="store.toggleSort(c.name, $event.shiftKey)" (contextmenu)="openColMenu($event, c.name)"
+                  [title]="c.typeName + ' — click to sort, Shift+click to sort by several columns, right-click for more'">
                   <span class="cname">{{ c.name }}</span>
                   @if (sortMark(c.name); as mark) {
                     <span class="sort">{{ mark }}</span>
@@ -130,8 +133,9 @@ function readHeight(): number {
                 @for (cell of row; track $index; let ci = $index) {
                   @let fk = fkAt(ci);
                   <td [class.null]="cell === null" [class.fk]="!!fk && cell !== null && !isCut(ri, ci)" [class.cut]="isCut(ri, ci)"
+                    [class.picked]="isPicked(ri, ci)"
                     [title]="isCut(ri, ci) ? 'Shortened: the full value has more than 4000 characters' : (cell ?? 'NULL')"
-                    (click)="onCell(ri, ci, fk)" (contextmenu)="openRowMenu($event, ri, ci)">{{ cell ?? "NULL" }}</td>
+                    (click)="onCell($event, ri, ci, fk)" (contextmenu)="openRowMenu($event, ri, ci)">{{ cell ?? "NULL" }}</td>
                 }
               </tr>
             } @empty {
@@ -190,11 +194,53 @@ function readHeight(): number {
             </button>
           }
         }
+        @if (m.col !== null && !isCut(m.row, m.col)) {
+          @let v = cellValue(m.row, m.col);
+          @let col = columnName(m.col);
+          <div class="ref-title">Filter by {{ col }}</div>
+          @let picks = pickedValues(m.col);
+          @if (picks.length > 1) {
+            <button type="button" role="menuitem" (click)="filterBy(col, 'in', picks)">is one of the {{ picks.length }} picked values</button>
+            <button type="button" role="menuitem" (click)="filterBy(col, 'notIn', picks)">is none of them</button>
+          }
+          @if (v === null) {
+            <button type="button" role="menuitem" (click)="filterBy(col, 'isNull', [])">is null</button>
+            <button type="button" role="menuitem" (click)="filterBy(col, 'notNull', [])">is not null</button>
+          } @else {
+            <button type="button" role="menuitem" (click)="filterBy(col, 'eq', [v])"><span>= <span class="v">{{ v }}</span></span></button>
+            <button type="button" role="menuitem" (click)="filterBy(col, 'ne', [v])"><span>≠ <span class="v">{{ v }}</span></span></button>
+            @if (ordered(m.col)) {
+              <button type="button" role="menuitem" (click)="filterBy(col, 'lt', [v])"><span>&lt; <span class="v">{{ v }}</span></span></button>
+              <button type="button" role="menuitem" (click)="filterBy(col, 'gt', [v])"><span>&gt; <span class="v">{{ v }}</span></span></button>
+            }
+          }
+        }
         <div class="sep-line"></div>
         @if (m.col !== null && cellValue(m.row, m.col) !== null) {
           <button type="button" role="menuitem" (click)="copyCell(m.row, m.col)">Copy value</button>
         }
         <button type="button" role="menuitem" (click)="copyRow(m.row)">Copy row as JSON</button>
+      </div>
+    }
+    @if (colMenu(); as cm) {
+      <div class="menu-scrim" (click)="colMenu.set(null)" (contextmenu)="$event.preventDefault(); colMenu.set(null)"></div>
+      <div class="ref-menu" role="menu" [style.left.px]="cm.x" [style.top.px]="cm.y">
+        <div class="ref-title">{{ cm.column }}</div>
+        <button type="button" role="menuitem" (click)="sortOnly(cm.column, false)">Sort ascending</button>
+        <button type="button" role="menuitem" (click)="sortOnly(cm.column, true)">Sort descending</button>
+        @if (sortKeys().length && !inSort(cm.column)) {
+          <button type="button" role="menuitem" (click)="addSort(cm.column, false)">Then by this, ascending</button>
+          <button type="button" role="menuitem" (click)="addSort(cm.column, true)">Then by this, descending</button>
+        }
+        @if (inSort(cm.column)) {
+          <button type="button" role="menuitem" (click)="removeSort(cm.column)">Remove from the sort</button>
+        }
+        <div class="sep-line"></div>
+        <button type="button" role="menuitem" (click)="filterColumn(cm)">Filter…</button>
+        @if (filterText(cm.column) !== "") {
+          <button type="button" role="menuitem" (click)="clearColumn(cm.column)">Clear this column's filter</button>
+        }
+        <button type="button" role="menuitem" (click)="copyName(cm.column)">Copy column name</button>
       </div>
     }
   `,
@@ -238,6 +284,8 @@ function readHeight(): number {
       border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; background: var(--input-bg); color: var(--text); }
     .filters input.issue { border-color: var(--danger); }
     td.cut { color: var(--text-muted); }
+    td.picked { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .ref-menu .v { color: var(--accent); }
     .count { font-variant-numeric: tabular-nums; }
     td { cursor: copy; }
     td.null { color: var(--text-muted); font-style: italic; }
@@ -459,13 +507,98 @@ export class DataDrawerComponent {
     void navigator.clipboard?.writeText(json).then(() => this.workspace.flash("Row copied as JSON"));
   }
 
-  protected onCell(rowIndex: number, colIndex: number, fk: VRef | null): void {
+  protected onCell(event: MouseEvent, rowIndex: number, colIndex: number, fk: VRef | null): void {
+    // Ctrl/Cmd+click picks cells of one column, for "Filter by: is one of".
+    if (event.ctrlKey || event.metaKey) {
+      this.togglePick(rowIndex, colIndex);
+      return;
+    }
+    this.picked.set(null);
     const value = this.store.result()?.rows[rowIndex]?.[colIndex] ?? null;
     if (fk && value !== null && !this.isCut(rowIndex, colIndex)) {
       this.store.followOutgoing(fk, this.rowRecord(rowIndex));
     } else if (value !== null) {
       void navigator.clipboard?.writeText(value).then(() => this.workspace.flash("Value copied"));
     }
+  }
+
+  /** Cells picked with Ctrl+click (one column at a time). */
+  protected readonly picked = signal<{ col: number; rows: number[] } | null>(null);
+  protected readonly colMenu = signal<{ x: number; y: number; column: string } | null>(null);
+  private readonly bar = viewChild(FilterBarComponent);
+  protected readonly sortKeys = computed(() => this.store.current()?.sort ?? []);
+
+  private togglePick(row: number, col: number): void {
+    if (this.isCut(row, col) || this.cellValue(row, col) === null) return;
+    const p = this.picked();
+    if (!p || p.col !== col) return this.picked.set({ col, rows: [row] });
+    const rows = p.rows.includes(row) ? p.rows.filter((r) => r !== row) : [...p.rows, row];
+    this.picked.set(rows.length ? { col, rows } : null);
+  }
+
+  protected isPicked(row: number, col: number): boolean {
+    const p = this.picked();
+    return !!p && p.col === col && p.rows.includes(row);
+  }
+
+  /** The distinct values of the picked cells of a column. */
+  protected pickedValues(col: number): string[] {
+    const p = this.picked();
+    if (!p || p.col !== col) return [];
+    return [...new Set(p.rows.map((r) => this.cellValue(r, col)).filter((v): v is string => v !== null))];
+  }
+
+  protected columnName(col: number): string {
+    return this.store.result()?.columns[col]?.name ?? "";
+  }
+
+  protected ordered(col: number): boolean {
+    return isOrderedKind(this.store.kinds().get(this.columnName(col)) ?? "other");
+  }
+
+  protected filterBy(column: string, op: Op, args: string[]): void {
+    this.rowMenu.set(null);
+    this.picked.set(null);
+    this.store.addCondition({ t: "cond", id: newId(), column, op, args });
+  }
+
+  protected openColMenu(event: MouseEvent, column: string): void {
+    event.preventDefault();
+    this.colMenu.set({ x: Math.min(event.clientX, window.innerWidth - 240), y: Math.min(event.clientY, window.innerHeight - 260), column });
+  }
+
+  protected inSort(column: string): boolean {
+    return this.sortKeys().some((k) => k.column === column);
+  }
+
+  protected sortOnly(column: string, desc: boolean): void {
+    this.colMenu.set(null);
+    this.store.setSort([{ column, desc }]);
+  }
+
+  protected addSort(column: string, desc: boolean): void {
+    this.colMenu.set(null);
+    this.store.setSort([...this.sortKeys(), { column, desc }]);
+  }
+
+  protected removeSort(column: string): void {
+    this.colMenu.set(null);
+    this.store.setSort(this.sortKeys().filter((k) => k.column !== column));
+  }
+
+  protected filterColumn(cm: { x: number; y: number; column: string }): void {
+    this.colMenu.set(null);
+    this.bar()?.openFor(cm.column, cm.x, cm.y);
+  }
+
+  protected clearColumn(column: string): void {
+    this.colMenu.set(null);
+    this.store.setQuick(column, "");
+  }
+
+  protected copyName(column: string): void {
+    this.colMenu.set(null);
+    void navigator.clipboard?.writeText(column).then(() => this.workspace.flash("Column name copied"));
   }
 
   protected followIncoming(ref: VRef, row: Record<string, string | null>): void {

@@ -189,6 +189,21 @@ export class FilterBarComponent {
     this.open(n, false, event);
   }
 
+  /** Opens the editor for a new condition on `column` at a screen position (column header menu). */
+  openFor(column: string, x: number, y: number): void {
+    const col = this.columns().find((c) => c.name === column);
+    if (!col) return;
+    const kind = kindOf(col, this.engine());
+    const op = opsFor(kind, this.engine(), col.nullable ?? true)[0].op as Op;
+    const width = 420;
+    this.editing.set({
+      draft: { t: "cond", id: newId(), column, op, args: [""] },
+      isNew: true,
+      x: Math.max(8, Math.min(x, window.innerWidth - width - 8)),
+      y: Math.min(y, window.innerHeight - 220),
+    });
+  }
+
   protected addCondition(event: Event): void {
     this.open(this.newCondition(), true, event);
   }
