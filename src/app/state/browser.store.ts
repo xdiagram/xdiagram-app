@@ -21,9 +21,9 @@ import { toCsv, toJson } from "../export/rows-export";
 import { kindOf } from "../filter/kinds";
 import type { RelContext } from "../filter/expression";
 import { labelColumn } from "../filter/label-column";
-import { relOptions } from "../filter/relations";
+import { type RelOption, relOptions, relatedTo } from "../filter/relations";
 import type { FkRows, FkTarget } from "../filter/pickers";
-import { type FilterNode, type GroupNode, LIMITS, type SortKey, type WireNode } from "../filter/model";
+import { type FilterNode, type GroupNode, LIMITS, newId, type SortKey, type WireNode } from "../filter/model";
 import { parseQuick } from "../filter/quick-syntax";
 import { type DbMemory, type SavedFilter, deleteNamed, rememberExpression, rememberTable, saveNamed } from "../filter/memory";
 import { addNode, emptyRoot, fromEquality, hasActive, reId, removeNode, setColumnFilter, toggleOff, withoutNav } from "../filter/tree";
@@ -532,6 +532,18 @@ export class BrowserStore {
 
   private navigate(tableId: string, filters: BrowseFilter[]): void {
     this.history.update((h) => [...h, { tableId, where: fromEquality(filters, "nav"), sort: [], offset: 0 }]);
+    void this.load();
+  }
+
+  /**
+   * A new step of the trail with the rows of a related table that relate to all the rows shown,
+   * not one: the memberships of these users, the organizations of these projects.
+   */
+  followAll(option: RelOption): void {
+    const cur = this.current();
+    if (!cur) return;
+    const node = relatedTo(cur.tableId, option, cur.where, this.refs());
+    this.history.update((h) => [...h, { tableId: option.tableId, where: { t: "group", id: newId(), op: "and", items: [node] }, sort: [], offset: 0 }]);
     void this.load();
   }
 

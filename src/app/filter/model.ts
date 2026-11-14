@@ -99,6 +99,8 @@ export interface RelNode {
   /** Conditions on the related rows (their own columns). */
   filter?: GroupNode;
   off?: boolean;
+  /** Came from opening the related rows of a filtered list (not remembered for the table). */
+  origin?: "nav";
 }
 
 export type FilterNode = GroupNode | CondNode | RelNode;

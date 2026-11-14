@@ -1,6 +1,6 @@
 import { parseExpression, printExpression, type RelContext } from "./expression";
 import type { RelNode } from "./model";
-import { quantText, relOptions, type RefLike } from "./relations";
+import { quantText, relOptions, relatedTo, type RefLike } from "./relations";
 import { renameColumns, reId, hasActive } from "./tree";
 import { toWire } from "./wire";
 
@@ -32,6 +32,20 @@ describe("relationships of a table", () => {
     expect(quantText("some", "orders")).toBe("has orders");
     expect(quantText("none", "orders")).toBe("has no orders");
     expect(quantText({ count: { op: "ge", n: 3 } }, "orders")).toBe("has ≥ 3 orders");
+  });
+});
+
+describe("the related rows of a filtered list", () => {
+  it("turns the list's filter into a condition of the related table, named the way back", () => {
+    const where = parseExpression("email ~ gmail");
+    const memberships = relOptions("public.users", REFS).find((o) => o.label === "orders.user_id")!;
+    const node = relatedTo("public.users", memberships, where, REFS);
+    expect(node).toMatchObject({ t: "rel", label: "user", schema: "public", table: "users", on: [["user_id", "id"]], quant: "some", origin: "nav" });
+    expect(node.filter).toBe(where);
+    // Up: the organization of these users (named after the children's table from its side).
+    const org = relOptions("public.users", REFS).find((o) => o.label === "org")!;
+    expect(relatedTo("public.users", org, null, REFS)).toMatchObject({ label: "users", table: "users", on: [["id", "org_id"]] });
+    expect(relatedTo("public.users", org, null, REFS).filter).toBeUndefined();
   });
 });
 

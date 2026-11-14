@@ -124,7 +124,7 @@ export function columnsUsed(n: FilterNode, into = new Set<string>()): Set<string
 
 /** The tree without nodes that came from FK navigation (what is remembered for a table). */
 export function withoutNav(root: GroupNode): GroupNode {
-  return removeWhere(root, (n) => n.t === "cond" && n.origin === "nav");
+  return removeWhere(root, (n) => (n.t === "cond" || n.t === "rel") && n.origin === "nav");
 }
 
 function removeWhere(root: GroupNode, pred: (n: FilterNode) => boolean): GroupNode {

@@ -1,4 +1,4 @@
-import type { CountOp, Quant } from "./model";
+import { type CountOp, type GroupNode, newId, type Quant, type RelNode } from "./model";
 
 /** A relationship as the diagram knows it (declared, or found by X-ray). */
 export interface RefLike {
@@ -67,6 +67,28 @@ export function relOptions(tableId: string, refs: RefLike[]): RelOption[] {
     if (n > 1) o.label = `${o.label}${n}`;
   }
   return out;
+}
+
+/**
+ * The related-row condition that selects, in `option`'s table, the rows related to the rows of
+ * `tableId` matching `where` (no `where`: to any row): "the orders of these users". Its name is
+ * the way back as the related table calls it.
+ */
+export function relatedTo(tableId: string, option: RelOption, where: GroupNode | null, refs: RefLike[]): RelNode {
+  const on = option.on.map(([local, remote]) => [remote, local] as [string, string]);
+  const back = relOptions(option.tableId, refs).find((o) => o.tableId === tableId && JSON.stringify(o.on) === JSON.stringify(on));
+  const { schema, table } = split(tableId);
+  return {
+    t: "rel",
+    id: newId(),
+    label: back?.label ?? short(tableId),
+    schema,
+    table,
+    on,
+    quant: "some",
+    ...(where && where.items.length ? { filter: where } : {}),
+    origin: "nav",
+  };
 }
 
 const SYMBOL: Record<CountOp, string> = { eq: "=", ne: "≠", lt: "<", le: "≤", gt: ">", ge: "≥" };

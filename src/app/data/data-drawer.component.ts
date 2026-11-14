@@ -174,6 +174,15 @@ function readHeight(): number {
         @if (r.stableOrder === false) {
           <span class="muted" title="The table has no primary key: rows with equal sort values may move between pages">· order not unique</span>
         }
+        @if (store.relOptions().length) {
+          <select class="related" (change)="openRelated($any($event.target))" aria-label="Open the related rows of all these rows"
+            title="Opens a related table filtered to the rows related to all the rows that match here (not just one)">
+            <option value="">Related rows of these…</option>
+            @for (o of store.relOptions(); track o.label; let i = $index) {
+              <option [value]="i">{{ o.label }} {{ o.direction === "children" ? "(rows pointing at these)" : "(rows these point at)" }}</option>
+            }
+          </select>
+        }
         <span class="spacer"></span>
         <span class="muted">click a value to copy it · underlined values follow the foreign key · right-click a row for more</span>
         <button type="button" (click)="store.page(-1)" [disabled]="!store.current()?.offset || store.loading()">‹ Prev</button>
@@ -318,6 +327,8 @@ function readHeight(): number {
     .reopen:hover { background: var(--hover); }
     td.none { color: var(--text-muted); font-family: var(--font); cursor: default; padding: 10px; }
     footer { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-top: 1px solid var(--border); flex: none; }
+    footer .related { font: inherit; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; padding: 1px 4px; background: var(--panel);
+      color: var(--accent); max-width: 220px; cursor: pointer; }
     footer button { font: inherit; font-size: 12px; border: 1px solid var(--border); background: var(--panel); color: var(--text);
       border-radius: 6px; padding: 2px 9px; cursor: pointer; }
     footer button:disabled { opacity: 0.5; cursor: default; }
@@ -424,6 +435,13 @@ export class DataDrawerComponent {
     rows: (column, search, label) => this.store.fkRows(column, search, label ?? null),
     setLabel: (column, label) => this.store.setFkLabel(column, label),
   };
+
+  /** Footer: the related rows of all the rows that match, in a new step of the trail. */
+  protected openRelated(select: HTMLSelectElement): void {
+    const option = this.store.relOptions()[Number(select.value)];
+    select.value = "";
+    if (option) this.store.followAll(option);
+  }
 
   /** Copy / Export menu of the filter bar: the filter as an expression, the rows as SQL, CSV or JSON. */
   protected async copyFilter(what: CopyKind): Promise<void> {

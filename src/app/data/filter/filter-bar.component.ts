@@ -43,7 +43,7 @@ interface Editing {
     }
     @for (n of tree().items; track n.id) {
       @if (n.id !== searchNode()?.id) {
-      <span class="chip" [class.off]="n.off" [class.bad]="!!issueOf(n)" [class.nav]="isNav(n)" [title]="issueOf(n) ?? (isNav(n) ? 'From following a foreign key' : '')">
+      <span class="chip" [class.off]="n.off" [class.bad]="!!issueOf(n)" [class.nav]="isNav(n)" [title]="issueOf(n) ?? (isNav(n) ? 'From following a relationship (not remembered for this table)' : '')">
         <input type="checkbox" [checked]="!n.off" (change)="emit(toggle(n.id))" [attr.aria-label]="(n.off ? 'Apply ' : 'Switch off ') + text(n)" />
         <button type="button" class="body" (click)="edit(n, $event)">
           @if (n.t === "cond") {
@@ -337,7 +337,7 @@ export class FilterBarComponent {
   }
 
   protected isNav(n: FilterNode): boolean {
-    return n.t === "cond" && n.origin === "nav";
+    return (n.t === "cond" || n.t === "rel") && n.origin === "nav";
   }
 
   protected toggle(id: string): GroupNode {
@@ -442,7 +442,7 @@ export class FilterBarComponent {
     }
     // Edited conditions apply again (and stop being "from navigation").
     if (draft.t === "cond") draft = { ...draft, off: false, origin: undefined };
-    else if (draft.t === "rel") draft = { ...draft, off: false };
+    else if (draft.t === "rel") draft = { ...draft, off: false, origin: undefined };
     const tree = e.isNew ? addNode(this.tree(), draft) : replaceNode(this.tree(), e.draft.id, draft);
     if (hasActive(draft) || !e.isNew) this.emit(tree);
   }
