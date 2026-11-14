@@ -497,7 +497,7 @@ export class DiagramComponent implements DiagramHandle {
     stage.on("click tap", (e) => {
       // A click on the background clears the selection, except while drawing a selection box
       // (Konva reports its release as a click) or with Shift held.
-      if (e.target === stage && !this.band && !(e.evt as MouseEvent).shiftKey) {
+      if (e.target === stage && isPrimary(e.evt) && !this.band && !(e.evt as MouseEvent).shiftKey) {
         this.selection.clear();
         this.evidence.set(null);
         this.applyHighlight();
@@ -854,6 +854,9 @@ export class DiagramComponent implements DiagramHandle {
       this.store.moveTables(moves);
     });
     node.on("click tap", (e) => {
+      // Konva reports right and middle clicks as clicks too: they must not change the selection
+      // (a right-click opens the menu for the whole selection).
+      if (!isPrimary(e.evt)) return;
       if (isAdditive(e.evt)) {
         if (this.selection.has(id)) this.selection.delete(id);
         else this.selection.add(id);
@@ -1867,6 +1870,12 @@ function pointsBounds(points: number[]): Rect {
   }
   const pad = 16;
   return { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 };
+}
+
+/** The main button, or a touch (which has no button). */
+function isPrimary(evt: Event | undefined): boolean {
+  const button = (evt as Partial<MouseEvent> | undefined)?.button;
+  return button === undefined || button === 0;
 }
 
 /** Shift, Ctrl or Cmd held: a click adds to (or removes from) the selection instead of replacing it. */
