@@ -11,6 +11,7 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use super::browse::{truncate_cell, BrowseColumn, BrowseRequest, BrowseResult, MAX_LIMIT};
 use super::connect::{non_empty_field, resolve_password, ConnectionInput, SslMode};
+use super::sql::{classify, Dialect};
 use super::types::*;
 use crate::error::AppError;
 
@@ -377,16 +378,49 @@ pub fn resolve_schema(schema: &str) -> String {
     if schema.is_empty() || schema == "public" { "dbo".to_string() } else { schema.to_string() }
 }
 
-/// Columns of a table in column order (empty when it does not exist).
+/// Columns of a table in column order (empty when it does not exist). A user-defined alias type
+/// is reported as its base type, so it is compared and shown like one.
 pub async fn table_columns(client: &mut MsClient, schema: &str, table: &str) -> Result<Vec<BrowseColumn>, AppError> {
     let cols = rows(
         client,
-        "SELECT c.name, ty.name FROM sys.columns c JOIN sys.types ty ON c.user_type_id = ty.user_type_id
+        "SELECT c.name, CASE WHEN ty.is_user_defined = 1 THEN TYPE_NAME(c.system_type_id) ELSE ty.name END, CAST(c.is_nullable AS INT)
+         FROM sys.columns c JOIN sys.types ty ON c.user_type_id = ty.user_type_id
          WHERE c.object_id = OBJECT_ID(QUOTENAME(@P1) + '.' + QUOTENAME(@P2)) ORDER BY c.column_id",
         &[&schema, &table],
     )
     .await?;
-    Ok(cols.iter().map(|r| BrowseColumn { name: s(r, 0).unwrap_or_default(), type_name: s(r, 1).unwrap_or_default() }).collect())
+    Ok(cols
+        .iter()
+        .map(|r| {
+            let type_name = s(r, 1).unwrap_or_default();
+            BrowseColumn { name: s(r, 0).unwrap_or_default(), kind: classify(Dialect::Mssql, &type_name), type_name, nullable: n(r, 2) != 0, enum_values: None }
+        })
+        .collect())
+}
+
+/// Primary-key columns in key order.
+pub async fn primary_key(client: &mut MsClient, schema: &str, table: &str) -> Result<Vec<String>, AppError> {
+    Ok(rows(
+        client,
+        "SELECT c.name FROM sys.indexes i
+         JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+         JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+         WHERE i.is_primary_key = 1 AND i.object_id = OBJECT_ID(QUOTENAME(@P1) + '.' + QUOTENAME(@P2)) ORDER BY ic.key_ordinal",
+        &[&schema, &table],
+    )
+    .await?
+    .iter()
+    .filter_map(|r| s(r, 0))
+    .collect())
+}
+
+/// Whether the name is a view.
+pub async fn is_view(client: &mut MsClient, schema: &str, table: &str) -> Result<bool, AppError> {
+    Ok(rows(client, "SELECT o.type FROM sys.objects o WHERE o.object_id = OBJECT_ID(QUOTENAME(@P1) + '.' + QUOTENAME(@P2))", &[&schema, &table])
+        .await?
+        .first()
+        .and_then(|r| s(r, 0))
+        .is_some_and(|t| t.trim() == "V"))
 }
 
 pub async fn row_estimate(client: &mut MsClient, schema: &str, table: &str) -> Result<f64, AppError> {

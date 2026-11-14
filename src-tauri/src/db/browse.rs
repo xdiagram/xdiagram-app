@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tokio_postgres::Client;
 
 use super::advisor::{qualified, quote_ident};
+use super::sql::ColKind;
 use crate::error::AppError;
 
 pub const MAX_LIMIT: u32 = 500;
@@ -52,11 +53,25 @@ impl BrowseRequest {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowseColumn {
     pub name: String,
+    /// The type as the engine's catalog names it.
     pub type_name: String,
+    /// What the column holds (decides the filter operators and how values are compared).
+    pub kind: ColKind,
+    pub nullable: bool,
+    /// The allowed values of an enum column, in their declared order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enum_values: Option<Vec<String>>,
+}
+
+impl BrowseColumn {
+    /// A column known only by name and type (tests, join previews): nullable, kind from the type.
+    pub fn named(d: super::sql::Dialect, name: &str, type_name: &str) -> Self {
+        BrowseColumn { name: name.into(), type_name: type_name.into(), kind: super::sql::classify(d, type_name), nullable: true, enum_values: None }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -135,19 +150,64 @@ pub fn build_query(req: &BrowseRequest, columns: &[BrowseColumn], order: &[(Stri
     sql
 }
 
-/// Columns of a table, view or foreign table, in attribute order (empty when it does not exist).
-pub async fn pg_table_columns(client: &Client, schema: &str, table: &str) -> Result<Vec<BrowseColumn>, AppError> {
+/// Columns of a table, view or foreign table, in attribute order (empty when it does not exist),
+/// with the relation's kind (`r`, `p`, `v`, `m`, `f`). A domain is classified by its base type;
+/// enums (also behind a domain) carry their labels.
+pub async fn pg_columns_and_relkind(client: &Client, schema: &str, table: &str) -> Result<(Vec<BrowseColumn>, String), AppError> {
     let rows = client
         .query(
-            "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod)
+            "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod), a.attnotnull,
+                    bt.typtype::text, format_type(bt.oid, NULL), c.relkind::text,
+                    CASE WHEN bt.typtype = 'e' THEN
+                      (SELECT array_agg(e.enumlabel::text ORDER BY e.enumsortorder) FROM pg_enum e WHERE e.enumtypid = bt.oid)
+                    END
              FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_type t ON t.oid = a.atttypid
+             JOIN pg_type bt ON bt.oid = CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE t.oid END
              WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
                AND a.attnum > 0 AND NOT a.attisdropped
              ORDER BY a.attnum",
             &[&schema, &table],
         )
         .await?;
-    Ok(rows.iter().map(|r| BrowseColumn { name: r.get(0), type_name: r.get(1) }).collect())
+    let relkind = rows.first().map(|r| r.get::<_, String>(5)).unwrap_or_default();
+    let columns = rows
+        .iter()
+        .map(|r| {
+            let enum_values: Option<Vec<String>> = r.get(6);
+            let base: String = r.get(4);
+            BrowseColumn {
+                name: r.get(0),
+                type_name: r.get(1),
+                kind: if r.get::<_, String>(3) == "e" { ColKind::Enum } else { super::sql::classify(super::sql::Dialect::Postgres, &base) },
+                nullable: !r.get::<_, bool>(2),
+                enum_values,
+            }
+        })
+        .collect();
+    Ok((columns, relkind))
+}
+
+/// Columns of a table, view or foreign table, in attribute order (empty when it does not exist).
+pub async fn pg_table_columns(client: &Client, schema: &str, table: &str) -> Result<Vec<BrowseColumn>, AppError> {
+    Ok(pg_columns_and_relkind(client, schema, table).await?.0)
+}
+
+/// Primary-key columns in key order (empty without a primary key).
+pub async fn pg_primary_key(client: &Client, schema: &str, table: &str) -> Result<Vec<String>, AppError> {
+    Ok(client
+        .query(
+            "SELECT a.attname::text FROM pg_index ix
+             JOIN pg_class c ON c.oid = ix.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+             JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord) ON TRUE
+             JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+             WHERE n.nspname = $1 AND c.relname = $2 AND ix.indisprimary ORDER BY k.ord",
+            &[&schema, &table],
+        )
+        .await?
+        .iter()
+        .map(|r| r.get::<_, String>(0))
+        .collect())
 }
 
 /// Planner estimate of a table's row count (0 when never analysed).
@@ -255,7 +315,7 @@ mod tests {
     use super::*;
 
     fn cols(names: &[&str]) -> Vec<BrowseColumn> {
-        names.iter().map(|n| BrowseColumn { name: n.to_string(), type_name: "text".into() }).collect()
+        names.iter().map(|n| BrowseColumn { name: n.to_string(), type_name: "text".into(), ..Default::default() }).collect()
     }
 
     #[test]

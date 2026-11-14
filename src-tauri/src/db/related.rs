@@ -119,7 +119,7 @@ mod tests {
     use super::*;
 
     fn cols(spec: &[(&str, &str)]) -> Vec<BrowseColumn> {
-        spec.iter().map(|(n, t)| BrowseColumn { name: n.to_string(), type_name: t.to_string() }).collect()
+        spec.iter().map(|(n, t)| BrowseColumn { name: n.to_string(), type_name: t.to_string(), ..Default::default() }).collect()
     }
 
     fn lookup(filters: &[(&str, Option<&str>)], limit: u32) -> RowLookup {

@@ -10,6 +10,7 @@ use mysql_async::{Conn, Opts, OptsBuilder, Row, SslOpts, Value};
 
 use super::browse::{truncate_cell, BrowseColumn, BrowseRequest, BrowseResult, MAX_LIMIT};
 use super::connect::{non_empty_field, resolve_password, ConnectionInput, SslMode};
+use super::sql::{classify, ColKind, Dialect};
 use super::types::*;
 use crate::error::AppError;
 
@@ -418,14 +419,69 @@ pub async fn resolve_db(conn: &mut Conn, schema: &str) -> Result<String, AppErro
 pub async fn table_columns(conn: &mut Conn, db: &str, table: &str) -> Result<Vec<BrowseColumn>, AppError> {
     let cols: Vec<Row> = conn
         .exec(
-            "select column_name, column_type from information_schema.columns where table_schema = ? and table_name = ? order by ordinal_position",
+            "select column_name, column_type, is_nullable from information_schema.columns where table_schema = ? and table_name = ? order by ordinal_position",
             (db, table),
         )
         .await?;
     Ok(cols
         .iter()
-        .map(|r| BrowseColumn { name: text(r, 0).unwrap_or_default(), type_name: text(r, 1).unwrap_or_default() })
+        .map(|r| {
+            let type_name = text(r, 1).unwrap_or_default();
+            let kind = classify(Dialect::Mysql, &type_name);
+            BrowseColumn {
+                name: text(r, 0).unwrap_or_default(),
+                enum_values: (kind == ColKind::Enum).then(|| enum_values(&type_name)),
+                kind,
+                nullable: text(r, 2).as_deref() != Some("NO"),
+                type_name,
+            }
+        })
         .collect())
+}
+
+/// The labels of `enum('a','it''s')`.
+pub fn enum_values(column_type: &str) -> Vec<String> {
+    let Some(body) = column_type.find('(').and_then(|i| column_type.get(i + 1..column_type.len().saturating_sub(1))) else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\'' {
+            continue;
+        }
+        let mut value = String::new();
+        while let Some(c) = chars.next() {
+            if c == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    chars.next();
+                    value.push('\'');
+                } else {
+                    break;
+                }
+            } else {
+                value.push(c);
+            }
+        }
+        out.push(value);
+    }
+    out
+}
+
+/// Primary-key columns in key order.
+pub async fn primary_key(conn: &mut Conn, db: &str, table: &str) -> Result<Vec<String>, AppError> {
+    let pk: Vec<Row> = conn
+        .exec(
+            "select column_name from information_schema.key_column_usage
+             where table_schema = ? and table_name = ? and constraint_name = 'PRIMARY' order by ordinal_position",
+            (db, table),
+        )
+        .await?;
+    Ok(pk.iter().filter_map(|r| text(r, 0)).collect())
+}
+
+/// Whether the name is a view (`table_type = 'VIEW'`).
+pub async fn is_view(conn: &mut Conn, db: &str, table: &str) -> Result<bool, AppError> {
+    let r: Option<Row> = conn.exec_first("select table_type from information_schema.tables where table_schema = ? and table_name = ?", (db, table)).await?;
+    Ok(r.as_ref().and_then(|r| text(r, 0)).as_deref() == Some("VIEW"))
 }
 
 pub async fn row_estimate(conn: &mut Conn, db: &str, table: &str) -> Result<f64, AppError> {

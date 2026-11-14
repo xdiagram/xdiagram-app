@@ -359,13 +359,9 @@ pub async fn browse_join(input: &ConnectionInput, req: JoinRequest) -> Result<Br
     let columns: Vec<BrowseColumn> = req
         .columns
         .iter()
-        .map(|c| BrowseColumn {
-            name: format!("{}.{}", c.alias, c.column),
-            type_name: tables
-                .get(&c.alias)
-                .and_then(|t| t.columns.iter().find(|x| x.name == c.column))
-                .map(|x| x.type_name.clone())
-                .unwrap_or_default(),
+        .map(|c| {
+            let source = tables.get(&c.alias).and_then(|t| t.columns.iter().find(|x| x.name == c.column));
+            BrowseColumn { name: format!("{}.{}", c.alias, c.column), ..source.cloned().unwrap_or_default() }
         })
         .collect();
     let (rows, has_more, truncated) = cap_rows(rows, req.limit.clamp(1, MAX_LIMIT) as usize);

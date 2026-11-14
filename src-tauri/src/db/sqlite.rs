@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use super::browse::{truncate_cell, BrowseColumn, BrowseRequest, BrowseResult, MAX_LIMIT};
 use super::connect::{non_empty_field, ConnectionInput};
+use super::sql::{classify, Dialect};
 use super::types::*;
 use crate::error::AppError;
 
@@ -228,13 +229,43 @@ pub fn fetch_schema_json(conn: &Connection) -> Result<DatabaseSchema, AppError> 
     Ok(schema)
 }
 
+/// Columns of a table (empty when it does not exist), and the primary-key columns in key order.
+pub fn columns_and_key(conn: &Connection, table: &str) -> Result<(Vec<BrowseColumn>, Vec<String>), AppError> {
+    let mut info = conn.prepare(&format!("PRAGMA table_info({})", quote(table)))?;
+    let cols: Vec<(BrowseColumn, i64)> = info
+        .query_map([], |r| {
+            let type_name = r.get::<_, Option<String>>(2)?.unwrap_or_default().to_lowercase();
+            let pk: i64 = r.get(5)?;
+            let column = BrowseColumn {
+                name: r.get(1)?,
+                kind: classify(Dialect::Sqlite, &type_name),
+                type_name,
+                nullable: r.get::<_, i64>(3)? == 0 && pk == 0,
+                enum_values: None,
+            };
+            Ok((column, pk))
+        })?
+        .collect::<Result<_, _>>()?;
+    let mut key: Vec<&(BrowseColumn, i64)> = cols.iter().filter(|c| c.1 > 0).collect();
+    key.sort_by_key(|c| c.1);
+    let key = key.into_iter().map(|c| c.0.name.clone()).collect();
+    Ok((cols.into_iter().map(|c| c.0).collect(), key))
+}
+
 /// Columns of a table (empty when it does not exist).
 pub fn table_columns(conn: &Connection, table: &str) -> Result<Vec<BrowseColumn>, AppError> {
-    let mut info = conn.prepare(&format!("PRAGMA table_info({})", quote(table)))?;
-    let cols = info
-        .query_map([], |r| Ok(BrowseColumn { name: r.get(1)?, type_name: r.get::<_, Option<String>>(2)?.unwrap_or_default().to_lowercase() }))?
-        .collect::<Result<_, _>>()?;
-    Ok(cols)
+    Ok(columns_and_key(conn, table)?.0)
+}
+
+/// `(is a view, has a rowid)`: views and `WITHOUT ROWID` tables have no rowid to sort by.
+pub fn relation_info(conn: &Connection, table: &str) -> (bool, bool) {
+    conn.query_row("SELECT type, coalesce(sql, '') FROM sqlite_master WHERE name = ?1", [table], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map(|(kind, sql)| {
+            let view = kind == "view";
+            let without_rowid = sql.to_ascii_uppercase().split_whitespace().collect::<Vec<_>>().join(" ").contains("WITHOUT ROWID");
+            (view, !view && !without_rowid)
+        })
+        .unwrap_or((false, false))
 }
 
 /// Exact row count (SQLite keeps no estimate).
@@ -273,7 +304,7 @@ pub fn browse(conn: &Connection, req: &BrowseRequest) -> Result<BrowseResult, Ap
     if cols.is_empty() {
         return Err(AppError::Invalid(format!("Table {} not found", req.table)));
     }
-    let columns: Vec<BrowseColumn> = cols.iter().map(|c| BrowseColumn { name: c.0.clone(), type_name: c.1.to_lowercase() }).collect();
+    let columns: Vec<BrowseColumn> = cols.iter().map(|c| BrowseColumn { name: c.0.clone(), type_name: c.1.to_lowercase(), ..Default::default() }).collect();
     let known = |c: &str| columns.iter().any(|x| x.name == c);
     let mut conditions = Vec::new();
     let mut params: Vec<String> = Vec::new();

@@ -1,5 +1,6 @@
 pub mod advisor;
 pub mod browse;
+pub mod catalog;
 pub mod connect;
 pub mod dispatch;
 pub mod introspect;

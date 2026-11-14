@@ -320,7 +320,7 @@ mod tests {
     use super::*;
 
     fn col(name: &str) -> BrowseColumn {
-        BrowseColumn { name: name.into(), type_name: "text".into() }
+        BrowseColumn { name: name.into(), type_name: "text".into(), ..Default::default() }
     }
 
     #[test]

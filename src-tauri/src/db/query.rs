@@ -210,7 +210,7 @@ mod tests {
     use super::*;
 
     fn cols(names: &[&str]) -> Vec<BrowseColumn> {
-        names.iter().map(|n| BrowseColumn { name: n.to_string(), type_name: "int".into() }).collect()
+        names.iter().map(|n| BrowseColumn { name: n.to_string(), type_name: "int".into(), ..Default::default() }).collect()
     }
 
     fn request() -> (JoinRequest, HashMap<String, Resolved>) {
