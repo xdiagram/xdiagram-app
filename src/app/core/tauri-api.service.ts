@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ask } from "@tauri-apps/plugin-dialog";
 
+import type { WireNode } from "../filter/model";
+
 /**
  * Shape of `@dbml/connector`'s `DatabaseSchema`, as returned by the Rust `introspect` command.
  * Only passed through to `importer.generateDbml`, so it is kept opaque here on purpose.
@@ -189,12 +191,25 @@ export interface BrowseFilter {
 export interface BrowseRequest {
   schema: string;
   table: string;
+  /** Equality filters (FK navigation); AND-ed with `filter`. */
   filters: BrowseFilter[];
-  orderBy: { column: string; desc: boolean } | null;
+  /** The filter tree (see `src/app/filter/model.ts` and Rust `filter.rs`). */
+  filter?: WireNode | null;
+  orderBy?: { column: string; desc: boolean } | null;
+  /** Sort keys, first to last; the primary key is added as tie-breaker. */
+  sort?: { column: string; desc: boolean }[];
   limit: number;
   offset: number;
   /** Statement time limit in seconds. */
   timeoutSecs?: number;
+}
+
+export interface CountResult {
+  count: number;
+  /** More rows match than the cap; `count` is the cap. */
+  capped: boolean;
+  timedOut: boolean;
+  elapsedMs: number;
 }
 
 /** Statistics of one column over a table sample (see `profile.rs`). */
@@ -229,21 +244,47 @@ export interface TableProfile {
 }
 
 export interface BrowseResult {
-  columns: { name: string; typeName: string }[];
+  columns: BrowseColumn[];
   /** Values as text; null is SQL NULL. */
   rows: (string | null)[][];
   hasMore: boolean;
   rowEstimate: number;
   orderedBy: string[];
+  /** The sort as applied: `tie` marks primary-key columns added for stable paging. */
+  sort?: { column: string; desc: boolean; tie: boolean }[];
+  /** False when the table has no primary key or row id: pages may repeat rows. */
+  stableOrder?: boolean;
   truncatedCells: number;
+  /** `[row, column]` of every value shortened to 4000 characters. */
+  truncatedAt?: [number, number][];
   elapsedMs: number;
 }
 
 // ---- Related data (src-tauri/src/db/related.rs) ----
 
+/** What a column holds (Rust `ColKind`): decides the filter operators offered for it. */
+export type ColKind =
+  | "int"
+  | "decimal"
+  | "float"
+  | "bool"
+  | "text"
+  | "enum"
+  | "uuid"
+  | "date"
+  | "time"
+  | "timestamp"
+  | "timestamptz"
+  | "json"
+  | "binary"
+  | "other";
+
 export interface BrowseColumn {
   name: string;
   typeName: string;
+  kind?: ColKind;
+  nullable?: boolean;
+  enumValues?: string[];
 }
 
 /** Rows of one table whose key columns equal the given values (none may be NULL). */
@@ -378,6 +419,11 @@ export class TauriApi {
 
   browseTable(input: ConnectionInput, request: BrowseRequest, opId?: string): Promise<BrowseResult> {
     return this.db("browse_table", { input, request, opId });
+  }
+
+  /** How many rows match a browse request's filter, counted up to `cap` (time-limited). */
+  countRows(input: ConnectionInput, request: { request: BrowseRequest; cap?: number }, opId?: string): Promise<CountResult> {
+    return this.db("count_rows", { input, request, opId });
   }
 
   /** A batch of key lookups on one connection (read-only), for the related-data map. */

@@ -2,7 +2,10 @@
 
 use std::time::Instant;
 
-use super::browse::{finish_page, pg_fetch_text, pg_row_estimate, pg_table_columns, plan_page, BrowseColumn, BrowseRequest, BrowseResult};
+use super::browse::{
+    finish_count, finish_page, pg_fetch_text, pg_row_estimate, pg_table_columns, plan_count, plan_page, BrowseColumn, BrowseRequest, BrowseResult, CountRequest,
+    CountResult,
+};
 use super::run::run;
 use super::profile::{profile_columns, sample_sql, ProfileRequest, TableProfile, DEFAULT_SAMPLE, MAX_SAMPLE};
 use super::query::{self, JoinRequest, Mode, Resolved};
@@ -169,6 +172,14 @@ async fn introspect_raw(input: &ConnectionInput, schemas: &[String]) -> Result<D
             blocking(move || sqlite::fetch_schema_json(&sqlite::open(&input)?)).await
         }
     }
+}
+
+/// How many rows match a browse request's filter, up to a cap and within the time limit.
+pub async fn count_rows(input: &ConnectionInput, request: CountRequest) -> Result<CountResult, AppError> {
+    let started = Instant::now();
+    let tables = vec![(request.request.schema.clone(), request.request.table.clone())];
+    let req = request.clone();
+    run(input, tables, move |d, cat| Ok(vec![plan_count(d, cat, &req)?]), move |_, _, ran| finish_count(&request, ran, started)).await
 }
 
 /// One page of a table's rows, filtered and sorted (see `browse.rs`), on any engine.

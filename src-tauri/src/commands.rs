@@ -82,6 +82,12 @@ pub async fn browse_table(input: ConnectionInput, request: BrowseRequest, op_id:
     ops::cancellable(op_id, dispatch::browse(&input, request)).await
 }
 
+/// How many rows match a browse request's filter, counted up to a cap (read-only, time-limited).
+#[tauri::command]
+pub async fn count_rows(input: ConnectionInput, request: db::browse::CountRequest, op_id: Option<String>) -> Result<db::browse::CountResult, AppError> {
+    ops::cancellable(op_id, dispatch::count_rows(&input, request)).await
+}
+
 /// "Related data": the rows a row references and the rows referencing it, as a batch of key
 /// lookups on one connection (read-only).
 #[tauri::command]

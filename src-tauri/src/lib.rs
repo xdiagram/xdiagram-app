@@ -54,6 +54,7 @@ pub fn run() {
             commands::update_endpoint,
             commands::import_sqlite_ddl,
             commands::browse_table,
+            commands::count_rows,
             commands::profile_table,
             commands::join_sql,
             commands::browse_join,

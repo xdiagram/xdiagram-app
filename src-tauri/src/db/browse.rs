@@ -222,6 +222,67 @@ pub fn plan_page(d: Dialect, cat: &Catalog, req: &BrowseRequest) -> Result<Stmt,
     Ok(Stmt { sql, params: r.params, timeout_s: req.timeout(), optional: false })
 }
 
+/// How many rows match a filter, counted up to `cap` (so a huge table answers quickly).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CountRequest {
+    pub request: BrowseRequest,
+    #[serde(default)]
+    pub cap: Option<u64>,
+}
+
+pub const DEFAULT_COUNT_CAP: u64 = 100_000;
+pub const MAX_COUNT_CAP: u64 = 10_000_000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CountResult {
+    pub count: u64,
+    /// More rows match than `cap`; `count` is the cap.
+    pub capped: bool,
+    /// The count did not finish in time.
+    pub timed_out: bool,
+    pub elapsed_ms: u64,
+}
+
+impl CountRequest {
+    pub fn cap(&self) -> u64 {
+        self.cap.unwrap_or(DEFAULT_COUNT_CAP).clamp(1, MAX_COUNT_CAP)
+    }
+}
+
+/// Counts the matching rows up to `cap + 1` (so it can tell the cap was passed), optional:
+/// a timeout is reported, not raised.
+pub fn plan_count(d: Dialect, cat: &Catalog, req: &CountRequest) -> Result<Stmt, AppError> {
+    let b = &req.request;
+    let meta = meta_of(cat, b)?;
+    let mut r = Render::new(d);
+    let filter = combine(b.filter.as_ref(), &b.filters);
+    let cond = where_clause(&mut r, &Scope { meta, alias: ALIAS.into() }, filter.as_ref())?;
+    let alias = d.quote(ALIAS);
+    let wher = cond.map(|c| format!(" WHERE {c}")).unwrap_or_default();
+    let n = req.cap() + 1;
+    let sql = match d {
+        Dialect::Mssql => format!("SELECT CONVERT(NVARCHAR(MAX), COUNT(*)) FROM (SELECT TOP ({n}) 1 AS x FROM {} AS {alias}{wher}) AS c", meta.qualified),
+        Dialect::Postgres => format!("SELECT (count(*))::text FROM (SELECT 1 AS x FROM {} AS {alias}{wher} LIMIT {n}) AS c", meta.qualified),
+        Dialect::Mysql | Dialect::Sqlite => format!("SELECT count(*) FROM (SELECT 1 AS x FROM {} AS {alias}{wher} LIMIT {n}) AS c", meta.qualified),
+    };
+    Ok(Stmt { sql, params: r.params, timeout_s: b.timeout(), optional: true })
+}
+
+pub fn finish_count(req: &CountRequest, ran: Vec<Ran>, started: Instant) -> Result<CountResult, AppError> {
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    match ran.into_iter().next() {
+        Some(Ran::Rows(rows)) => {
+            let n: u64 = rows.first().and_then(|r| r.first()).cloned().flatten().and_then(|v| v.parse().ok()).unwrap_or(0);
+            let cap = req.cap();
+            Ok(CountResult { count: n.min(cap), capped: n > cap, timed_out: false, elapsed_ms })
+        }
+        Some(Ran::Failed(e)) => Err(e),
+        _ => Ok(CountResult { count: 0, capped: false, timed_out: true, elapsed_ms }),
+    }
+}
+
 /// The page's rows and what was applied.
 pub fn finish_page(d: Dialect, cat: &Catalog, req: &BrowseRequest, ran: Vec<Ran>, started: Instant) -> Result<BrowseResult, AppError> {
     let meta = meta_of(cat, req)?;
@@ -405,6 +466,28 @@ mod tests {
         let req = request();
         assert!(plan_page(Dialect::Mssql, &ms, &req).unwrap().sql.ends_with("ORDER BY (SELECT NULL) OFFSET 200 ROWS FETCH NEXT 101 ROWS ONLY"));
         assert!(!page_order(Dialect::Mssql, &ms[&("public".to_string(), "users".to_string())], &req).unwrap().2);
+    }
+
+    #[test]
+    fn capped_counts_per_engine() {
+        let mut b = request();
+        b.filter = Some(FilterNode::Cond { id: "c".into(), column: "id".into(), op: Op::Gt, args: vec!["5".into()], cs: false });
+        let req = CountRequest { request: b, cap: Some(1000) };
+        let pg = catalog(Dialect::Postgres, &[("id", "integer", false)], &["id"], None);
+        let st = plan_count(Dialect::Postgres, &pg, &req).unwrap();
+        assert_eq!(st.sql, "SELECT (count(*))::text FROM (SELECT 1 AS x FROM \"public\".\"users\" AS \"t0\" WHERE \"t0\".\"id\" > ($1::text)::integer LIMIT 1001) AS c");
+        assert!(st.optional);
+        let ms = catalog(Dialect::Mssql, &[("id", "int", false)], &["id"], None);
+        assert_eq!(
+            plan_count(Dialect::Mssql, &ms, &req).unwrap().sql,
+            "SELECT CONVERT(NVARCHAR(MAX), COUNT(*)) FROM (SELECT TOP (1001) 1 AS x FROM [public].[users] AS [t0] WHERE [t0].[id] > @P1) AS c"
+        );
+        let started = Instant::now();
+        let rows = |n: &str| vec![Ran::Rows(vec![vec![Some(n.to_string())]])];
+        assert!(finish_count(&req, rows("1001"), started).unwrap().capped);
+        assert_eq!(finish_count(&req, rows("1001"), started).unwrap().count, 1000);
+        assert_eq!(finish_count(&req, rows("12"), started).unwrap(), CountResult { count: 12, capped: false, timed_out: false, elapsed_ms: 0 });
+        assert!(finish_count(&req, vec![Ran::TimedOut], started).unwrap().timed_out);
     }
 
     #[test]
