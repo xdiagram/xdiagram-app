@@ -1,10 +1,8 @@
 import { ChangeDetectionStrategy, Component, ElementRef, afterNextRender, computed, effect, input, output, signal, untracked, viewChild } from "@angular/core";
 
 import { type ValueCount, type ValuesResult, errorMessage } from "../../core/tauri-api.service";
+import type { ValueSource } from "../../filter/pickers";
 import { isCancelled } from "../../state/workspace.store";
-
-/** Where the picker gets a column's values: (column, text to find, condition to leave out). */
-export type ValueSource = (column: string, search: string, exclude: string | null) => Promise<ValuesResult>;
 
 type State = { s: "loading" } | { s: "done"; r: ValuesResult } | { s: "error"; message: string };
 

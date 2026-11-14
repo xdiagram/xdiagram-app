@@ -6,7 +6,9 @@ import { type Arg, type CondNode, type Op, SEARCH_COLUMN, type Span } from "../.
 import { opInfo, opsFor } from "../../filter/operators";
 import { parsePoint, printPoint } from "../../filter/relative-dates";
 import { treeIssues } from "../../filter/validate";
-import { type ValueSource, ValuePickerComponent } from "./value-picker.component";
+import type { FkSource, ValueSource } from "../../filter/pickers";
+import { FkPickerComponent } from "./fk-picker.component";
+import { ValuePickerComponent } from "./value-picker.component";
 
 const PERIODS: { value: string; label: string }[] = [
   { value: "today", label: "today" },
@@ -21,7 +23,7 @@ const PERIODS: { value: string; label: string }[] = [
 /** Edits one condition: column, operator (fitted to the column's kind) and value inputs. */
 @Component({
   selector: "app-condition-row",
-  imports: [ValuePickerComponent],
+  imports: [ValuePickerComponent, FkPickerComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <select class="col" [value]="node().column" (change)="setColumn($any($event.target).value)" aria-label="Column">
@@ -92,8 +94,12 @@ const PERIODS: { value: string; label: string }[] = [
       }
     }
     @if (canPick()) {
-      <button type="button" class="pick" [class.on]="pickerOpen()" [attr.aria-expanded]="pickerOpen()" (click)="pickerOpen.set(!pickerOpen())"
+      <button type="button" class="pick" [class.on]="picker() === 'values'" [attr.aria-expanded]="picker() === 'values'" (click)="toggle('values')"
         title="Pick from this column's values, with how often each occurs among the matching rows">▾ Values</button>
+    }
+    @if (fkTarget(); as t) {
+      <button type="button" class="pick rows" [class.on]="picker() === 'rows'" [attr.aria-expanded]="picker() === 'rows'" (click)="toggle('rows')"
+        [title]="'Pick a row of ' + t.tableId + ' by its name'">▾ {{ shortTable(t.tableId) }}</button>
     }
     @if (textMatch()) {
       <label class="cs" title="Match upper and lower case exactly">
@@ -103,9 +109,12 @@ const PERIODS: { value: string; label: string }[] = [
     @if (message(); as m) {
       <div class="msg">{{ m }}</div>
     }
-    @if (pickerOpen() && canPick()) {
+    @if (picker() === "values" && canPick()) {
       <app-value-picker class="picker" [source]="values()!" [column]="node().column" [exclude]="node().id" [enumValues]="enumValues()"
-        [multi]="shape() === 'list'" [selected]="stringArgs()" (pick)="pickValue($event)" (pickNull)="pickNull()" (closed)="pickerOpen.set(false)" />
+        [multi]="shape() === 'list'" [selected]="stringArgs()" (pick)="pickValue($event)" (pickNull)="pickNull()" (closed)="picker.set(null)" />
+    } @else if (picker() === "rows" && fkTarget(); as t) {
+      <app-fk-picker class="picker" [source]="fk()!" [column]="node().column" [target]="t" [multi]="shape() === 'list'" [selected]="stringArgs()"
+        (pick)="pickValue($event)" (closed)="picker.set(null)" />
     }
   `,
   styles: `
@@ -139,6 +148,8 @@ export class ConditionRowComponent {
   readonly issue = input<string | null>(null);
   /** Where the value picker gets a column's values (none: no picker). */
   readonly values = input<ValueSource | null>(null);
+  /** Rows of referenced tables (foreign-key columns get a row picker). */
+  readonly fk = input<FkSource | null>(null);
   readonly changed = output<CondNode>();
   /** Enter in a value box. */
   readonly submit = output<void>();
@@ -146,7 +157,8 @@ export class ConditionRowComponent {
   protected readonly periods = PERIODS;
   protected readonly anyColumn = SEARCH_COLUMN;
   protected readonly calIcon = "▦";
-  protected readonly pickerOpen = signal(false);
+  /** The open picker: the column's values, or the rows of the table it references. */
+  protected readonly picker = signal<"values" | "rows" | null>(null);
 
   private readonly column = computed(() => this.columns().find((c) => c.name === this.node().column) ?? null);
   protected readonly kind = computed<ColKind>(() => {
@@ -211,6 +223,21 @@ export class ConditionRowComponent {
       this.kind() !== "binary",
   );
 
+  /** The referenced table, for "= / ≠ / is one of" on a single-column foreign key. */
+  protected readonly fkTarget = computed(() => {
+    const fk = this.fk();
+    if (!fk || !["eq", "ne", "in", "notIn"].includes(this.node().op)) return null;
+    return fk.target(this.node().column);
+  });
+
+  protected shortTable(id: string): string {
+    return id.replace(/^public\./, "");
+  }
+
+  protected toggle(which: "values" | "rows"): void {
+    this.picker.set(this.picker() === which ? null : which);
+  }
+
   protected pickValue(v: string): void {
     const shape = this.shape();
     if (shape === "list") {
@@ -220,14 +247,14 @@ export class ConditionRowComponent {
       this.setArg(0, v);
     } else {
       this.setArg(shape === "two" ? 1 : 0, v);
-      this.pickerOpen.set(false);
+      this.picker.set(null);
     }
   }
 
   /** NULL picked: the condition becomes "is null". */
   protected pickNull(): void {
     this.emit({ op: "isNull", args: [] });
-    this.pickerOpen.set(false);
+    this.picker.set(null);
   }
 
   protected openCal(el: HTMLInputElement): void {
@@ -279,7 +306,8 @@ export class ConditionRowComponent {
     const op = value as Op;
     const arity = opInfo(op).arity;
     const a = this.node().span ? [] : this.node().args;
-    const args = arity === 0 ? [] : arity === 1 ? [a[0] ?? ""] : arity === 2 ? [a[0] ?? "", a[1] ?? ""] : a.length ? a : [];
+    // A list keeps the values given so far, not empty boxes.
+    const args = arity === 0 ? [] : arity === 1 ? [a[0] ?? ""] : arity === 2 ? [a[0] ?? "", a[1] ?? ""] : a.filter((x) => typeof x !== "string" || x.trim() !== "");
     this.emit({ op, args, span: undefined });
   }
 

@@ -88,6 +88,12 @@ pub async fn count_rows(input: ConnectionInput, request: db::browse::CountReques
     ops::cancellable(op_id, dispatch::count_rows(&input, request)).await
 }
 
+/// A table's columns, kinds and primary key (no rows are read).
+#[tauri::command]
+pub async fn describe_table(input: ConnectionInput, schema: String, table: String, op_id: Option<String>) -> Result<db::catalog::TableInfo, AppError> {
+    ops::cancellable(op_id, dispatch::describe_table(&input, schema, table)).await
+}
+
 /// A column's values with how often each occurs among the rows matching a filter (read-only,
 /// sampled, time-limited): the value picker.
 #[tauri::command]

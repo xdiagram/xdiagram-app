@@ -5,8 +5,10 @@ import {
   BrowseFilter,
   BrowseResult,
   ColKind,
+  ConnectionInput,
   Engine,
   FilterIssue,
+  TableInfo,
   TableProfile,
   TauriApi,
   ValuesResult,
@@ -16,6 +18,8 @@ import {
 import { splitTableId } from "../diagram/canvas-edit";
 import type { VRef } from "../diagram/view-model";
 import { kindOf } from "../filter/kinds";
+import { labelColumn } from "../filter/label-column";
+import type { FkRows, FkTarget } from "../filter/pickers";
 import { type FilterNode, type GroupNode, LIMITS, type SortKey, type WireNode } from "../filter/model";
 import { parseQuick } from "../filter/quick-syntax";
 import { rememberExpression, rememberTable } from "../filter/memory";
@@ -128,6 +132,7 @@ export class BrowserStore {
         this.tableColumns.set(new Map());
         this.counts.clear();
         this.valueCache.clear();
+        this.described.clear();
         this.expressionHistory.set([]);
       });
     });
@@ -227,6 +232,67 @@ export class BrowserStore {
     return result;
   }
 
+  /** The table a column of the current table references (single-column foreign keys). */
+  fkTarget(column: string): FkTarget | null {
+    const ref = this.outgoing().find((r) => r.from.fields.length === 1 && r.from.fields[0] === column && r.to.fields.length === 1);
+    return ref ? { tableId: ref.to.table, key: ref.to.fields[0] } : null;
+  }
+
+  private readonly described = new Map<string, Promise<TableInfo>>();
+  private fkOp: string | null = null;
+
+  /** Columns and key of a table (once per session). */
+  private describe(input: ConnectionInput, tableId: string): Promise<TableInfo> {
+    let info = this.described.get(tableId);
+    if (!info) {
+      const { schema, table } = splitTableId(tableId);
+      info = this.api.describeTable(input, schema, table);
+      info.catch(() => this.described.delete(tableId));
+      this.described.set(tableId, info);
+    }
+    return info;
+  }
+
+  /**
+   * Rows of the table `column` references, as key and label (a name-like column, the remembered
+   * choice, or `label`), found by key or label; in key order, 50 at most.
+   */
+  async fkRows(column: string, search = "", label: string | null = null): Promise<FkRows> {
+    const target = this.fkTarget(column);
+    const conn = await this.workspace.currentConnection();
+    if (!target || !conn) throw new Error("Not connected");
+    const info = await this.describe(conn.input, target.tableId);
+    const dbKey = this.workspace.databaseKey();
+    const saved = label ?? (dbKey ? (await this.memory.table(dbKey, target.tableId))?.labelColumn : null);
+    const shown = labelColumn(info.columns.map((c) => ({ name: c.name, kind: kindOf(c, this.engine()) })), [target.key], saved);
+    const columns = shown ? [target.key, shown] : [target.key];
+    const text = search.trim();
+    const filter: WireNode | null = text ? { t: "search", id: "fk", text, columns } : null;
+    if (this.fkOp) void this.api.cancelOp(this.fkOp);
+    const op = crypto.randomUUID();
+    this.fkOp = op;
+    this.running.add(op);
+    const { schema, table } = splitTableId(target.tableId);
+    const timeoutSecs = Math.min(this.settings.settings().queryTimeoutSecs, 5);
+    const r = await this.api.browseTable(conn.input, { schema, table, filters: [], filter, sort: [], limit: 50, offset: 0, columns, timeoutSecs }, op).finally(() => {
+      this.running.delete(op);
+      if (this.fkOp === op) this.fkOp = null;
+    });
+    return {
+      label: shown,
+      labels: info.columns.filter((c) => c.name !== target.key).map((c) => c.name),
+      rows: r.rows.filter((row) => row[0] !== null).map((row) => ({ key: row[0] as string, label: shown ? row[1] : null })),
+      more: r.hasMore,
+    };
+  }
+
+  /** Remembers the column shown for the table `column` references. */
+  setFkLabel(column: string, label: string): void {
+    const target = this.fkTarget(column);
+    const dbKey = this.workspace.databaseKey();
+    if (target && dbKey) void this.memory.update(dbKey, (m) => rememberTable(m, target.tableId, { labelColumn: label }));
+  }
+
   /** Keeps the current table's filter and sort for next time (not the FK-navigation conditions). */
   private remember(loc: BrowseLocation): void {
     const key = this.workspace.databaseKey();
@@ -291,6 +357,7 @@ export class BrowserStore {
     else {
       this.counts.clear();
       this.valueCache.clear();
+      this.described.clear();
       void this.load();
     }
   }

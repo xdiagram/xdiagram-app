@@ -58,6 +58,9 @@ pub struct BrowseRequest {
     /// Statement time limit in seconds (default 10).
     #[serde(default)]
     pub timeout_secs: Option<u32>,
+    /// The columns to return, in this order (empty: all of them).
+    #[serde(default)]
+    pub columns: Vec<String>,
 }
 
 /// A sort key as applied: `tie` marks primary-key columns added so that paging is stable.
@@ -168,6 +171,21 @@ fn meta_of<'a>(cat: &'a Catalog, req: &BrowseRequest) -> Result<&'a TableMeta, A
     cat.get(&(req.schema.clone(), req.table.clone())).ok_or_else(|| not_found(&req.schema, &req.table))
 }
 
+/// The columns a page returns: the requested ones (checked, without repeats), else all.
+fn projected<'a>(meta: &'a TableMeta, req: &BrowseRequest) -> Result<Vec<&'a BrowseColumn>, AppError> {
+    if req.columns.is_empty() {
+        return Ok(meta.columns.iter().collect());
+    }
+    let mut out: Vec<&BrowseColumn> = Vec::new();
+    for name in &req.columns {
+        let col = meta.column(name).ok_or_else(|| AppError::Invalid(format!("Unknown column {name}")))?;
+        if !out.iter().any(|c| c.name == col.name) {
+            out.push(col);
+        }
+    }
+    Ok(out)
+}
+
 /// The ORDER BY of a page: the requested keys, then the primary key (else the row id) so that
 /// pages never overlap. Also returns the applied keys and whether the order is stable.
 pub fn page_order(d: Dialect, meta: &TableMeta, req: &BrowseRequest) -> Result<(String, Vec<AppliedSort>, bool), AppError> {
@@ -216,7 +234,7 @@ pub fn plan_page(d: Dialect, cat: &Catalog, req: &BrowseRequest) -> Result<Stmt,
     let cond = where_clause(&mut r, &Scope { meta, alias: ALIAS.into() }, filter.as_ref())?;
     let (order, _, _) = page_order(d, meta, req)?;
     let alias = d.quote(ALIAS);
-    let select = meta.columns.iter().map(|c| d.select_text(&format!("{alias}.{}", d.quote(&c.name)), &c.type_name)).collect::<Vec<_>>().join(", ");
+    let select = projected(meta, req)?.iter().map(|c| d.select_text(&format!("{alias}.{}", d.quote(&c.name)), &c.type_name)).collect::<Vec<_>>().join(", ");
     let mut sql = format!("SELECT {select} FROM {} AS {alias}", meta.qualified);
     if let Some(c) = cond {
         sql.push_str(&format!(" WHERE {c}"));
@@ -297,7 +315,7 @@ pub fn finish_page(d: Dialect, cat: &Catalog, req: &BrowseRequest, ran: Vec<Ran>
     };
     let (rows, has_more, truncated_at) = cap_rows_at(rows, req.limit.clamp(1, MAX_LIMIT) as usize);
     Ok(BrowseResult {
-        columns: meta.columns.clone(),
+        columns: projected(meta, req)?.into_iter().cloned().collect(),
         rows,
         has_more,
         row_estimate: meta.row_estimate,
@@ -447,6 +465,20 @@ mod tests {
         let lite = catalog(Dialect::Sqlite, &[("id", "integer", false), ("org_id", "integer", true), ("role", "text", true)], &[], Some("rowid"));
         req.sort = vec![SortKey { column: "org_id".into(), desc: false }];
         assert!(plan_page(Dialect::Sqlite, &lite, &req).unwrap().sql.ends_with("ORDER BY \"t0\".\"org_id\" ASC NULLS LAST, \"t0\".rowid LIMIT 101 OFFSET 200"));
+    }
+
+    #[test]
+    fn projection_returns_the_requested_columns_only() {
+        let pg = catalog(Dialect::Postgres, &[("id", "integer", false), ("org_id", "integer", true), ("role", "text", true)], &["id"], None);
+        let mut req = request();
+        req.columns = vec!["role".into(), "id".into(), "role".into()];
+        let st = plan_page(Dialect::Postgres, &pg, &req).unwrap();
+        assert!(st.sql.starts_with("SELECT (\"t0\".\"role\")::text, (\"t0\".\"id\")::text FROM"), "{}", st.sql);
+        let ran = vec![Ran::Rows(vec![vec![Some("admin".into()), Some("1".into())]])];
+        let page = finish_page(Dialect::Postgres, &pg, &req, ran, Instant::now()).unwrap();
+        assert_eq!(page.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["role", "id"]);
+        req.columns = vec!["nope".into()];
+        assert!(plan_page(Dialect::Postgres, &pg, &req).is_err());
     }
 
     #[test]

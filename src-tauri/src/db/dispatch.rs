@@ -6,6 +6,7 @@ use super::browse::{
     finish_count, finish_page, pg_fetch_text, pg_row_estimate, pg_table_columns, plan_count, plan_page, BrowseColumn, BrowseRequest, BrowseResult, CountRequest,
     CountResult,
 };
+use super::catalog::TableInfo;
 use super::run::run;
 use super::values::{finish_values, plan_values, ValuesRequest, ValuesResult};
 use super::profile::{profile_columns, sample_sql, ProfileRequest, TableProfile, DEFAULT_SAMPLE, MAX_SAMPLE};
@@ -181,6 +182,12 @@ pub async fn count_rows(input: &ConnectionInput, request: CountRequest) -> Resul
     let tables = vec![(request.request.schema.clone(), request.request.table.clone())];
     let req = request.clone();
     run(input, tables, move |d, cat| Ok(vec![plan_count(d, cat, &req)?]), move |_, _, ran| finish_count(&request, ran, started)).await
+}
+
+/// A table's columns (with kinds), primary key and size estimate; no rows are read.
+pub async fn describe_table(input: &ConnectionInput, schema: String, table: String) -> Result<TableInfo, AppError> {
+    let key = (schema.clone(), table.clone());
+    run(input, vec![(schema, table)], |_, _| Ok(Vec::new()), move |_, cat, _| cat.get(&key).map(TableInfo::from).ok_or_else(|| not_found(&key.0, &key.1))).await
 }
 
 /// A column's values with their counts among the matching rows (the value picker).

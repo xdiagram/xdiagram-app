@@ -202,6 +202,16 @@ export interface BrowseRequest {
   offset: number;
   /** Statement time limit in seconds. */
   timeoutSecs?: number;
+  /** The columns to return, in this order (default: all). */
+  columns?: string[];
+}
+
+/** A table's columns and key, without rows (see Rust `catalog::TableInfo`). */
+export interface TableInfo {
+  columns: BrowseColumn[];
+  primaryKey: string[];
+  rowEstimate: number;
+  isView: boolean;
 }
 
 export interface CountResult {
@@ -467,6 +477,11 @@ export class TauriApi {
   /** How many rows match a browse request's filter, counted up to `cap` (time-limited). */
   countRows(input: ConnectionInput, request: { request: BrowseRequest; cap?: number }, opId?: string): Promise<CountResult> {
     return this.db("count_rows", { input, request, opId });
+  }
+
+  /** A table's columns, kinds and primary key (no rows are read). */
+  describeTable(input: ConnectionInput, schema: string, table: string, opId?: string): Promise<TableInfo> {
+    return this.db("describe_table", { input, schema, table, opId });
   }
 
   /** A column's values with their counts among the matching rows (sampled, read-only). */

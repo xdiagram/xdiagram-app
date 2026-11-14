@@ -39,6 +39,22 @@ impl TableMeta {
 /// Tables a request uses, keyed by the `(schema, table)` the request names them by.
 pub type Catalog = HashMap<(String, String), TableMeta>;
 
+/// What `describe_table` tells the frontend about a table (for pickers that read another table).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableInfo {
+    pub columns: Vec<BrowseColumn>,
+    pub primary_key: Vec<String>,
+    pub row_estimate: f64,
+    pub is_view: bool,
+}
+
+impl From<&TableMeta> for TableInfo {
+    fn from(m: &TableMeta) -> Self {
+        TableInfo { columns: m.columns.clone(), primary_key: m.primary_key.clone(), row_estimate: m.row_estimate, is_view: m.is_view }
+    }
+}
+
 pub fn not_found(schema: &str, table: &str) -> AppError {
     AppError::Invalid(format!("Table {} not found", if schema.is_empty() || schema == "public" { table.to_string() } else { format!("{schema}.{table}") }))
 }
