@@ -108,7 +108,7 @@ pub fn plan_values(d: Dialect, cat: &Catalog, req: &ValuesRequest) -> Result<Vec
     // Each statement binds its own copy of the filter's parameters.
     let sample = |select: String| -> Result<(String, Vec<String>), AppError> {
         let mut r = Render::new(d);
-        let wher = where_clause(&mut r, &Scope::new(meta, ALIAS), filter.as_ref())?.map(|c| format!(" WHERE {c}")).unwrap_or_default();
+        let wher = where_clause(&mut r, &Scope::new(meta, ALIAS).with_catalog(cat), filter.as_ref())?.map(|c| format!(" WHERE {c}")).unwrap_or_default();
         let sql = match d {
             Dialect::Mssql => format!("SELECT TOP ({SAMPLE}) {select} FROM {from} AS {alias}{wher}"),
             _ => format!("SELECT {select} FROM {from} AS {alias}{wher} LIMIT {SAMPLE}"),

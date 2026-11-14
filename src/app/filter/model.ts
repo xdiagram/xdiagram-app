@@ -29,11 +29,18 @@ export type Op =
 
 export type BoolOp = "and" | "or";
 
+/** Compare operators for a number of related rows. */
+export type CountOp = "eq" | "ne" | "lt" | "le" | "gt" | "ge";
+
+/** How many related rows a row must have (Rust `filter::Quant`). */
+export type Quant = "some" | "none" | { count: { op: CountOp; n: number } };
+
 /** What Rust receives. */
 export type WireNode =
   | { t: "group"; id: string; op: BoolOp; not?: boolean; items: WireNode[] }
   | { t: "cond"; id: string; column: string; op: Op; args: string[]; cs?: boolean }
-  | { t: "search"; id: string; text: string; columns?: string[]; cs?: boolean };
+  | { t: "search"; id: string; text: string; columns?: string[]; cs?: boolean }
+  | { t: "rel"; id: string; schema: string; table: string; on: [string, string][]; quant: Quant; filter?: WireNode };
 
 /**
  * The pseudo-column of a search in every text column (`any ~ text`): in the UI tree it is a

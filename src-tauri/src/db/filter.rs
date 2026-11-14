@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::browse::{BrowseColumn, BrowseFilter};
-use super::catalog::TableMeta;
+use super::catalog::{Catalog, TableMeta};
 use super::sql::{Anchor, ColKind, Dialect};
 use crate::error::AppError;
 
@@ -86,6 +86,51 @@ pub enum FilterNode {
         #[serde(default)]
         cs: bool,
     },
+    /// Rows by their related rows in another table (or the same one): has some, has none, or a
+    /// number of them, optionally only counting related rows that match `filter`.
+    Rel {
+        id: String,
+        schema: String,
+        table: String,
+        /// `(column of this table, column of the related table)` pairs: the relationship's key.
+        on: Vec<(String, String)>,
+        quant: Quant,
+        /// Conditions on the related rows (their own columns).
+        #[serde(default)]
+        filter: Option<Box<FilterNode>>,
+    },
+}
+
+/// How many related rows a row must have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Quant {
+    /// At least one.
+    Some,
+    /// None at all.
+    None,
+    /// A number of them, compared with `op` (=, ≠, <, ≤, >, ≥).
+    Count { op: Op, n: u64 },
+}
+
+/// Related-row conditions inside related-row conditions, at most.
+pub const MAX_REL_DEPTH: usize = 3;
+
+/// The tables the filter's related-row conditions read (their metadata must be loaded).
+pub fn tables_used(node: &FilterNode, out: &mut Vec<(String, String)>) {
+    match node {
+        FilterNode::Group { items, .. } => items.iter().for_each(|i| tables_used(i, out)),
+        FilterNode::Rel { schema, table, filter, .. } => {
+            let key = (schema.clone(), table.clone());
+            if !out.contains(&key) {
+                out.push(key);
+            }
+            if let Some(f) = filter {
+                tables_used(f, out);
+            }
+        }
+        FilterNode::Cond { .. } | FilterNode::Search { .. } => {}
+    }
 }
 
 /// Columns a search may name (each takes a parameter: MySQL cannot reuse one).
@@ -104,11 +149,19 @@ pub struct Scope<'a> {
     pub meta: &'a TableMeta,
     pub alias: String,
     pub joined: Vec<(String, &'a TableMeta)>,
+    /// Every table the statement may read: related-row conditions look theirs up here.
+    pub cat: Option<&'a Catalog>,
 }
 
 impl<'a> Scope<'a> {
     pub fn new(meta: &'a TableMeta, alias: &str) -> Self {
-        Scope { meta, alias: alias.into(), joined: Vec::new() }
+        Scope { meta, alias: alias.into(), joined: Vec::new(), cat: None }
+    }
+
+    /// The same scope, able to render related-row conditions with the tables in `cat`.
+    pub fn with_catalog(mut self, cat: &'a Catalog) -> Self {
+        self.cat = Some(cat);
+        self
     }
 
     /// A column and its SQL expression: a column of the main table by its name, else
@@ -146,11 +199,14 @@ pub struct Render {
     pub params: Vec<String>,
     pub issues: Vec<Issue>,
     nodes: usize,
+    /// Related tables aliased so far (`_r1`, `_r2`, …: one counter, so a table can relate to itself).
+    rels: usize,
+    rel_depth: usize,
 }
 
 impl Render {
     pub fn new(d: Dialect) -> Self {
-        Render { d, params: Vec::new(), issues: Vec::new(), nodes: 0 }
+        Render { d, params: Vec::new(), issues: Vec::new(), nodes: 0, rels: 0, rel_depth: 0 }
     }
 
     /// Binds a value and returns its placeholder.
@@ -194,7 +250,68 @@ impl Render {
             }
             FilterNode::Cond { id, column, op, args, cs } => self.cond(s, id, column, *op, args, *cs),
             FilterNode::Search { id, text, columns, cs } => self.search(s, id, text, columns, *cs),
+            FilterNode::Rel { id, schema, table, on, quant, filter } => self.rel(s, id, (schema, table), on, *quant, filter.as_deref(), depth),
         }
+    }
+
+    /// `EXISTS` / `NOT EXISTS` / a correlated count over the related table, joined on `on` and
+    /// narrowed by `filter`. "At least one" and "none" counts become `EXISTS` / `NOT EXISTS`,
+    /// which stop at the first related row.
+    #[allow(clippy::too_many_arguments)]
+    fn rel(&mut self, s: &Scope, id: &str, (schema, table): (&str, &str), on: &[(String, String)], quant: Quant, filter: Option<&FilterNode>, depth: usize) -> Option<String> {
+        let d = self.d;
+        if self.rel_depth >= MAX_REL_DEPTH {
+            return self.issue(id, format!("Related-row conditions can be nested {MAX_REL_DEPTH} deep at most"));
+        }
+        let Some(cat) = s.cat else { return self.issue(id, "Related rows cannot be used here") };
+        let Some(meta) = cat.get(&(schema.to_string(), table.to_string())) else { return self.issue(id, format!("Table {table} not found")) };
+        if on.is_empty() {
+            return self.issue(id, "The relationship has no key columns");
+        }
+        if let Quant::Count { op, .. } = quant
+            && !matches!(op, Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge)
+        {
+            return self.issue(id, "Compare the number of related rows with =, ≠, <, ≤, > or ≥");
+        }
+        self.rels += 1;
+        let alias = format!("_r{}", self.rels);
+        let mut keys = Vec::new();
+        for (local, remote) in on {
+            let Some((_, local_expr)) = s.resolve(d, local) else { return self.issue(id, format!("Unknown column “{local}”")) };
+            let Some(rc) = meta.column(remote) else { return self.issue(id, format!("Unknown column “{table}.{remote}”")) };
+            keys.push(format!("{}.{} = {local_expr}", d.quote(&alias), d.quote(&rc.name)));
+        }
+        let mut wher = keys.join(" AND ");
+        if let Some(f) = filter {
+            let inner = Scope { meta, alias: alias.clone(), joined: Vec::new(), cat: s.cat };
+            self.rel_depth += 1;
+            let c = self.node(&inner, f, depth + 1);
+            self.rel_depth -= 1;
+            if let Some(c) = c {
+                wher = format!("{wher} AND {}", parenthesize(&c));
+            }
+        }
+        let from = format!("FROM {} AS {} WHERE {wher}", meta.qualified, d.quote(&alias));
+        let exists = |not: bool| format!("{}EXISTS (SELECT 1 {from})", if not { "NOT " } else { "" });
+        Some(match quant {
+            Quant::Some => exists(false),
+            Quant::None => exists(true),
+            Quant::Count { op, n } => match (op, n) {
+                (Op::Ge, 1) | (Op::Gt, 0) | (Op::Ne, 0) => exists(false),
+                (Op::Eq, 0) | (Op::Lt, 1) | (Op::Le, 0) => exists(true),
+                _ => {
+                    let sym = match op {
+                        Op::Eq => "=",
+                        Op::Ne => "<>",
+                        Op::Lt => "<",
+                        Op::Le => "<=",
+                        Op::Gt => ">",
+                        _ => ">=",
+                    };
+                    format!("(SELECT COUNT(*) {from}) {sym} {n}")
+                }
+            },
+        })
     }
 
     fn search(&mut self, s: &Scope, id: &str, text: &str, columns: &[String], cs: bool) -> Option<String> {
@@ -392,7 +509,7 @@ fn parenthesize(sql: &str) -> String {
 
 fn node_id(node: &FilterNode) -> &str {
     match node {
-        FilterNode::Group { id, .. } | FilterNode::Cond { id, .. } | FilterNode::Search { id, .. } => id,
+        FilterNode::Group { id, .. } | FilterNode::Cond { id, .. } | FilterNode::Search { id, .. } | FilterNode::Rel { id, .. } => id,
     }
 }
 
@@ -596,6 +713,102 @@ mod tests {
         let parsed: FilterNode = serde_json::from_str(json).unwrap();
         assert_eq!(render(Dialect::Mssql, &m, &parsed).unwrap().0, "[t0].[id] NOT IN (@P1)");
         assert!(serde_json::from_str::<FilterNode>(r#"{"t":"cond","id":"c","column":"id","op":"drop"}"#).is_err());
+    }
+
+    fn rel_catalog() -> Catalog {
+        let d = Dialect::Postgres;
+        let table = |name: &str, cols: &[(&str, &str)]| TableMeta {
+            qualified: d.qualified("public", name),
+            schema: "public".into(),
+            table: name.into(),
+            columns: cols.iter().map(|(n, t)| BrowseColumn::named(d, n, t)).collect(),
+            primary_key: vec!["id".into()],
+            ..Default::default()
+        };
+        Catalog::from([
+            (("public".to_string(), "users".to_string()), table("users", &[("id", "integer"), ("manager_id", "integer"), ("email", "text")])),
+            (("public".to_string(), "orders".to_string()), table("orders", &[("id", "integer"), ("user_id", "integer"), ("total", "numeric")])),
+        ])
+    }
+
+    fn rel(table: &str, on: (&str, &str), quant: Quant, filter: Option<FilterNode>) -> FilterNode {
+        FilterNode::Rel { id: format!("rel-{table}"), schema: "public".into(), table: table.into(), on: vec![(on.0.into(), on.1.into())], quant, filter: filter.map(Box::new) }
+    }
+
+    #[test]
+    fn related_rows_exist_count_and_nest() {
+        let cat = rel_catalog();
+        let users = &cat[&("public".to_string(), "users".to_string())];
+        let render = |f: &FilterNode| -> Result<(String, Vec<String>), Vec<Issue>> {
+            let mut r = Render::new(Dialect::Postgres);
+            match where_clause(&mut r, &Scope::new(users, "t0").with_catalog(&cat), Some(f)) {
+                Ok(sql) => Ok((sql.unwrap_or_default(), r.params)),
+                Err(AppError::Filter(issues)) => Err(issues),
+                Err(e) => panic!("{e:?}"),
+            }
+        };
+        let orders = |quant: Quant, filter: Option<FilterNode>| rel("orders", ("id", "user_id"), quant, filter);
+        let base = "FROM \"public\".\"orders\" AS \"_r1\" WHERE \"_r1\".\"user_id\" = \"t0\".\"id\"";
+        assert_eq!(render(&orders(Quant::Some, None)).unwrap().0, format!("EXISTS (SELECT 1 {base})"));
+        assert_eq!(render(&orders(Quant::None, None)).unwrap().0, format!("NOT EXISTS (SELECT 1 {base})"));
+        assert_eq!(render(&orders(Quant::Count { op: Op::Ge, n: 1 }, None)).unwrap().0, format!("EXISTS (SELECT 1 {base})"));
+        assert_eq!(render(&orders(Quant::Count { op: Op::Eq, n: 0 }, None)).unwrap().0, format!("NOT EXISTS (SELECT 1 {base})"));
+        let (sql, params) = render(&orders(Quant::Count { op: Op::Gt, n: 2 }, Some(cond("o", "total", Op::Ge, &["100"])))).unwrap();
+        assert_eq!(sql, format!("(SELECT COUNT(*) {base} AND (\"_r1\".\"total\" >= ($1::text)::numeric)) > 2"));
+        assert_eq!(params, vec!["100"]);
+        // A table related to itself: managers of at least two people.
+        let reports = rel("users", ("id", "manager_id"), Quant::Count { op: Op::Ge, n: 2 }, None);
+        assert_eq!(render(&reports).unwrap().0, "(SELECT COUNT(*) FROM \"public\".\"users\" AS \"_r1\" WHERE \"_r1\".\"manager_id\" = \"t0\".\"id\") >= 2");
+        // Nested: users with an order placed for someone without a manager; each level its own alias.
+        let nested = orders(Quant::Some, Some(rel("users", ("user_id", "id"), Quant::Some, Some(cond("c", "manager_id", Op::IsNull, &[])))));
+        let sql = render(&nested).unwrap().0;
+        assert!(sql.contains("\"_r2\".\"id\" = \"_r1\".\"user_id\" AND (\"_r2\".\"manager_id\" IS NULL)"), "{sql}");
+        // Problems, each on its node.
+        assert_eq!(render(&rel("nope", ("id", "x"), Quant::Some, None)).unwrap_err()[0].message, "Table nope not found");
+        assert_eq!(render(&rel("orders", ("id", "nope"), Quant::Some, None)).unwrap_err()[0].message, "Unknown column “orders.nope”");
+        assert!(render(&orders(Quant::Count { op: Op::Contains, n: 1 }, None)).is_err());
+        let mut deep = orders(Quant::Some, None);
+        for _ in 0..MAX_REL_DEPTH {
+            deep = orders(Quant::Some, Some(rel("users", ("user_id", "id"), Quant::Some, Some(deep))));
+        }
+        assert!(render(&deep).unwrap_err()[0].message.contains("nested"));
+        let mut r = Render::new(Dialect::Postgres);
+        assert!(where_clause(&mut r, &Scope::new(users, "t0"), Some(&orders(Quant::Some, None))).is_err(), "no catalog: refused");
+        let mut used = vec![];
+        tables_used(&nested, &mut used);
+        assert_eq!(used, vec![("public".to_string(), "orders".to_string()), ("public".to_string(), "users".to_string())]);
+    }
+
+    /// Has / has no / count against real rows (SQLite), including a table related to itself.
+    #[test]
+    fn related_rows_on_sqlite() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, manager_id INTEGER, email TEXT);
+             CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, total REAL);
+             INSERT INTO users VALUES (1, NULL, 'a'), (2, 1, 'b'), (3, 1, 'c'), (4, 2, 'd');
+             INSERT INTO orders VALUES (1, 1, 50), (2, 1, 150), (3, 1, 300), (4, 2, 20), (5, 4, 500);",
+        )
+        .unwrap();
+        let mut cat = Catalog::new();
+        for t in ["users", "orders"] {
+            cat.insert(("public".into(), t.into()), crate::db::catalog::sqlite_meta(&conn, t).unwrap().unwrap());
+        }
+        let users = &cat[&("public".to_string(), "users".to_string())];
+        let ids = |f: FilterNode| -> Vec<i64> {
+            let mut r = Render::new(Dialect::Sqlite);
+            let sql = where_clause(&mut r, &Scope::new(users, "t0").with_catalog(&cat), Some(&f)).unwrap().unwrap();
+            let mut st = conn.prepare(&format!("SELECT id FROM users AS \"t0\" WHERE {sql} ORDER BY id")).unwrap();
+            st.query_map(rusqlite::params_from_iter(r.params.iter()), |row| row.get(0)).unwrap().map(Result::unwrap).collect()
+        };
+        let orders = |quant: Quant, filter: Option<FilterNode>| rel("orders", ("id", "user_id"), quant, filter);
+        assert_eq!(ids(orders(Quant::Some, None)), vec![1, 2, 4]);
+        assert_eq!(ids(orders(Quant::None, None)), vec![3]);
+        assert_eq!(ids(orders(Quant::Count { op: Op::Ge, n: 2 }, None)), vec![1]);
+        assert_eq!(ids(orders(Quant::Some, Some(cond("o", "total", Op::Gt, &["100"])))), vec![1, 4]);
+        assert_eq!(ids(orders(Quant::Count { op: Op::Eq, n: 1 }, Some(cond("o", "total", Op::Lt, &["100"])))), vec![1, 2]);
+        assert_eq!(ids(rel("users", ("id", "manager_id"), Quant::Count { op: Op::Ge, n: 2 }, None)), vec![1], "managers of two or more");
+        assert_eq!(ids(rel("users", ("id", "manager_id"), Quant::None, None)), vec![3, 4], "no reports");
     }
 
     #[test]

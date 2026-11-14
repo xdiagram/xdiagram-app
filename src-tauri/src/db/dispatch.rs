@@ -10,6 +10,7 @@ use super::browse::{
 use super::catalog::{Catalog, TableInfo, TableMeta};
 use super::run::{run, Ran, Stmt};
 use super::values::{finish_values, plan_values, ValuesRequest, ValuesResult};
+use super::filter::{tables_used, FilterNode};
 use super::profile::{profile_columns, sample_sql, ProfileRequest, TableProfile, DEFAULT_SAMPLE, MAX_SAMPLE};
 use super::query::{self, JoinRequest, Mode};
 use super::sql::Dialect;
@@ -177,10 +178,19 @@ async fn introspect_raw(input: &ConnectionInput, schemas: &[String]) -> Result<D
     }
 }
 
+/// A request's table and the tables its filter's related-row conditions read.
+fn with_related(table: (String, String), filter: Option<&FilterNode>) -> Vec<(String, String)> {
+    let mut out = vec![table];
+    if let Some(f) = filter {
+        tables_used(f, &mut out);
+    }
+    out
+}
+
 /// How many rows match a browse request's filter, up to a cap and within the time limit.
 pub async fn count_rows(input: &ConnectionInput, request: CountRequest) -> Result<CountResult, AppError> {
     let started = Instant::now();
-    let tables = vec![(request.request.schema.clone(), request.request.table.clone())];
+    let tables = with_related((request.request.schema.clone(), request.request.table.clone()), request.request.filter.as_ref());
     let req = request.clone();
     run(input, tables, move |d, cat| Ok(vec![plan_count(d, cat, &req)?]), move |_, _, ran| finish_count(&request, ran, started)).await
 }
@@ -188,14 +198,14 @@ pub async fn count_rows(input: &ConnectionInput, request: CountRequest) -> Resul
 /// The rows a browse request's filter matches, from the first, whole values: for an export.
 pub async fn export_rows(input: &ConnectionInput, request: ExportRequest) -> Result<ExportResult, AppError> {
     let started = Instant::now();
-    let tables = vec![(request.request.schema.clone(), request.request.table.clone())];
+    let tables = with_related((request.request.schema.clone(), request.request.table.clone()), request.request.filter.as_ref());
     let req = request.clone();
     run(input, tables, move |d, cat| Ok(vec![plan_export(d, cat, &req)?]), move |_, cat, ran| finish_export(cat, &request, ran, started)).await
 }
 
 /// The rows a browse request shows, as SQL text with the values written in (nothing is run).
 pub async fn filter_sql(input: &ConnectionInput, request: BrowseRequest) -> Result<String, AppError> {
-    let tables = vec![(request.schema.clone(), request.table.clone())];
+    let tables = with_related((request.schema.clone(), request.table.clone()), request.filter.as_ref());
     run(input, tables, |_, _| Ok(Vec::new()), move |d, cat, _| plan_sql_text(d, cat, &request)).await
 }
 
@@ -208,7 +218,7 @@ pub async fn describe_table(input: &ConnectionInput, schema: String, table: Stri
 /// A column's values with their counts among the matching rows (the value picker).
 pub async fn value_counts(input: &ConnectionInput, request: ValuesRequest) -> Result<ValuesResult, AppError> {
     let started = Instant::now();
-    let tables = vec![(request.schema.clone(), request.table.clone())];
+    let tables = with_related((request.schema.clone(), request.table.clone()), request.filter.as_ref());
     let req = request.clone();
     run(input, tables, move |d, cat| plan_values(d, cat, &req), move |_, _, ran| finish_values(&request, ran, started)).await
 }
@@ -216,7 +226,7 @@ pub async fn value_counts(input: &ConnectionInput, request: ValuesRequest) -> Re
 /// One page of a table's rows, filtered and sorted (see `browse.rs`), on any engine.
 pub async fn browse(input: &ConnectionInput, request: BrowseRequest) -> Result<BrowseResult, AppError> {
     let started = Instant::now();
-    let tables = vec![(request.schema.clone(), request.table.clone())];
+    let tables = with_related((request.schema.clone(), request.table.clone()), request.filter.as_ref());
     let req = request.clone();
     run(input, tables, move |d, cat| Ok(vec![plan_page(d, cat, &req)?]), move |d, cat, ran| finish_page(d, cat, &request, ran, started)).await
 }
@@ -317,7 +327,7 @@ fn join_tables(cat: &Catalog, req: &JoinRequest) -> Result<HashMap<String, Table
         .collect()
 }
 
-/// Each table a join query names, once.
+/// Each table a join query names (and its filter's related-row conditions read), once.
 fn join_table_names(req: &JoinRequest) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     for t in &req.tables {
@@ -326,13 +336,16 @@ fn join_table_names(req: &JoinRequest) -> Vec<(String, String)> {
             out.push(key);
         }
     }
+    if let Some(f) = &req.filter {
+        tables_used(f, &mut out);
+    }
     out
 }
 
 /// The join query as readable SQL, values written in: the preview and Copy. Reads the tables'
 /// columns (so conditions compare as they will when run); nothing else runs.
 pub async fn join_sql(input: &ConnectionInput, req: JoinRequest) -> Result<String, AppError> {
-    run(input, join_table_names(&req), |_, _| Ok(Vec::new()), move |d, cat, _| Ok(query::build(d, &req, &join_tables(cat, &req)?, Mode::Readable)?.0)).await
+    run(input, join_table_names(&req), |_, _| Ok(Vec::new()), move |d, cat, _| Ok(query::build(d, &req, &join_tables(cat, &req)?, Some(cat), Mode::Readable)?.0)).await
 }
 
 /// Runs the join query read-only and returns a page of its rows (columns named `alias.column`).
@@ -343,7 +356,7 @@ pub async fn browse_join(input: &ConnectionInput, req: JoinRequest) -> Result<Br
         input,
         join_table_names(&req),
         move |d, cat| {
-            let (sql, params) = query::build(d, &plan_req, &join_tables(cat, &plan_req)?, Mode::Execute)?;
+            let (sql, params) = query::build(d, &plan_req, &join_tables(cat, &plan_req)?, Some(cat), Mode::Execute)?;
             Ok(vec![Stmt { sql, params, timeout_s: limit(plan_req.timeout_secs, 15), optional: false }])
         },
         move |_, cat, ran| {

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use super::browse::MAX_LIMIT;
-use super::catalog::TableMeta;
+use super::catalog::{Catalog, TableMeta};
 use super::filter::{where_clause, BoolOp, FilterNode, Op, Render, Scope};
 use super::sql::Dialect;
 use crate::error::AppError;
@@ -96,7 +96,7 @@ fn valid_alias(a: &str) -> bool {
 /// The SELECT for `req` and its parameters (Readable: none, the values are written in). `tables`
 /// maps each alias to its table; when a table's column list is empty, its selected and join
 /// columns are not checked (conditions always are).
-pub fn build(d: Dialect, req: &JoinRequest, tables: &HashMap<String, TableMeta>, mode: Mode) -> Result<(String, Vec<String>), AppError> {
+pub fn build(d: Dialect, req: &JoinRequest, tables: &HashMap<String, TableMeta>, cat: Option<&Catalog>, mode: Mode) -> Result<(String, Vec<String>), AppError> {
     let invalid = |m: String| Err(AppError::Invalid(m));
     if req.tables.is_empty() {
         return invalid("Add a table to the query".into());
@@ -184,7 +184,7 @@ pub fn build(d: Dialect, req: &JoinRequest, tables: &HashMap<String, TableMeta>,
     if !items.is_empty() {
         let main = tables.get(&root.alias).ok_or_else(|| AppError::Invalid(format!("Unknown table alias {}", root.alias)))?;
         let joined = req.tables[1..].iter().filter_map(|t| tables.get(&t.alias).map(|m| (t.alias.clone(), m))).collect();
-        let scope = Scope { meta: main, alias: root.alias.clone(), joined };
+        let scope = Scope { meta: main, alias: root.alias.clone(), joined, cat };
         let node = if items.len() == 1 { items.remove(0) } else { FilterNode::Group { id: "query".into(), op: BoolOp::And, not: false, items } };
         if let Some(c) = where_clause(&mut r, &scope, Some(&node))? {
             sql.push_str(&format!("{sep}WHERE {c}"));
@@ -256,7 +256,7 @@ mod tests {
                 FilterNode::Search { id: "s".into(), text: "7".into(), columns: vec![], cs: false },
             ],
         });
-        let (sql, params) = build(Dialect::Postgres, &req, &t, Mode::Execute).unwrap();
+        let (sql, params) = build(Dialect::Postgres, &req, &t, None, Mode::Execute).unwrap();
         assert!(
             sql.contains(
                 "WHERE (\"u\".\"email\" ILIKE $1 ESCAPE '!' OR \"m\".\"org_id\" > ($2::text)::integer OR (\"u\".\"id\" = ($3::text)::integer \
@@ -265,18 +265,18 @@ mod tests {
             "{sql}"
         );
         assert_eq!(params, vec!["%x'y%", "3", "7", "%7%", "7", "7"]);
-        let (readable, none) = build(Dialect::Postgres, &req, &t, Mode::Readable).unwrap();
+        let (readable, none) = build(Dialect::Postgres, &req, &t, None, Mode::Readable).unwrap();
         assert!(none.is_empty() && readable.contains("\"u\".\"email\" ILIKE '%x''y%' ESCAPE '!'"), "{readable}");
         req.filter = Some(cond("z", "x.id", Op::Eq, "1"));
-        assert!(matches!(build(Dialect::Postgres, &req, &t, Mode::Execute), Err(AppError::Filter(_))));
+        assert!(matches!(build(Dialect::Postgres, &req, &t, None, Mode::Execute), Err(AppError::Filter(_))));
         req.filter = Some(cond("z", "u.id", Op::Eq, "abc"));
-        assert!(matches!(build(Dialect::Postgres, &req, &t, Mode::Execute), Err(AppError::Filter(_))));
+        assert!(matches!(build(Dialect::Postgres, &req, &t, None, Mode::Execute), Err(AppError::Filter(_))));
     }
 
     #[test]
     fn executable_postgres() {
         let (req, t) = request();
-        let (sql, params) = build(Dialect::Postgres, &req, &t, Mode::Execute).unwrap();
+        let (sql, params) = build(Dialect::Postgres, &req, &t, None, Mode::Execute).unwrap();
         assert_eq!(
             sql,
             "SELECT (\"u\".\"email\")::text, (\"m\".\"org_id\")::text FROM \"public\".\"users\" AS \"u\" \
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn readable_and_other_dialects() {
         let (req, t) = request_for(Dialect::Mysql);
-        let (sql, params) = build(Dialect::Mysql, &req, &t, Mode::Readable).unwrap();
+        let (sql, params) = build(Dialect::Mysql, &req, &t, None, Mode::Readable).unwrap();
         assert!(sql.contains("\nINNER JOIN `public`.`memberships` AS `m` ON `m`.`user_id` = `u`.`id`"), "{sql}");
         assert!(sql.contains("\nWHERE `m`.`org_id` = CAST('7' AS SIGNED)"), "{sql}");
         assert!(sql.ends_with("\nORDER BY `u`.`email` LIMIT 50 OFFSET 100"), "{sql}");
@@ -297,7 +297,7 @@ mod tests {
         let (mut req, t) = request_for(Dialect::Mssql);
         req.order_by = None;
         req.joins[0].left = true;
-        let (sql, _) = build(Dialect::Mssql, &req, &t, Mode::Execute).unwrap();
+        let (sql, _) = build(Dialect::Mssql, &req, &t, None, Mode::Execute).unwrap();
         assert!(sql.contains("LEFT JOIN"));
         assert!(sql.contains("= @P1"));
         assert!(sql.ends_with("ORDER BY (SELECT NULL) OFFSET 100 ROWS FETCH NEXT 51 ROWS ONLY"), "{sql}");
@@ -307,12 +307,12 @@ mod tests {
     fn rejects_unknown_identifiers() {
         let (mut req, t) = request();
         req.columns.push(QueryColumn { alias: "u".into(), column: "password; DROP TABLE x".into() });
-        assert!(build(Dialect::Postgres, &req, &t, Mode::Execute).is_err());
+        assert!(build(Dialect::Postgres, &req, &t, None, Mode::Execute).is_err());
         let (mut req, t) = request();
         req.tables[1].alias = "m\"; --".into();
-        assert!(build(Dialect::Postgres, &req, &t, Mode::Execute).is_err());
+        assert!(build(Dialect::Postgres, &req, &t, None, Mode::Execute).is_err());
         let (mut req, t) = request();
         req.joins[0].parent = "x".into();
-        assert!(build(Dialect::Postgres, &req, &t, Mode::Execute).is_err());
+        assert!(build(Dialect::Postgres, &req, &t, None, Mode::Execute).is_err());
     }
 }

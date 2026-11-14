@@ -236,7 +236,7 @@ fn rows_stmt(d: Dialect, cat: &Catalog, req: &BrowseRequest, fetch: u32, offset:
     let meta = meta_of(cat, req)?;
     let mut r = Render::new(d);
     let filter = combine(req.filter.as_ref(), &req.filters);
-    let cond = where_clause(&mut r, &Scope::new(meta, ALIAS), filter.as_ref())?;
+    let cond = where_clause(&mut r, &Scope::new(meta, ALIAS).with_catalog(cat), filter.as_ref())?;
     let (order, _, _) = page_order(d, meta, req)?;
     let alias = d.quote(ALIAS);
     let select = projected(meta, req)?.iter().map(|c| d.select_text(&format!("{alias}.{}", d.quote(&c.name)), &c.type_name)).collect::<Vec<_>>().join(", ");
@@ -302,7 +302,7 @@ pub fn plan_sql_text(d: Dialect, cat: &Catalog, req: &BrowseRequest) -> Result<S
     let meta = meta_of(cat, req)?;
     let mut r = Render::new(d);
     let filter = combine(req.filter.as_ref(), &req.filters);
-    let cond = where_clause(&mut r, &Scope::new(meta, ALIAS), filter.as_ref())?;
+    let cond = where_clause(&mut r, &Scope::new(meta, ALIAS).with_catalog(cat), filter.as_ref())?;
     let (_, applied, _) = page_order(d, meta, req)?;
     let alias = d.quote(ALIAS);
     let columns = if req.columns.is_empty() {
@@ -361,7 +361,7 @@ pub fn plan_count(d: Dialect, cat: &Catalog, req: &CountRequest) -> Result<Stmt,
     let meta = meta_of(cat, b)?;
     let mut r = Render::new(d);
     let filter = combine(b.filter.as_ref(), &b.filters);
-    let cond = where_clause(&mut r, &Scope::new(meta, ALIAS), filter.as_ref())?;
+    let cond = where_clause(&mut r, &Scope::new(meta, ALIAS).with_catalog(cat), filter.as_ref())?;
     let alias = d.quote(ALIAS);
     let wher = cond.map(|c| format!(" WHERE {c}")).unwrap_or_default();
     let n = req.cap() + 1;
