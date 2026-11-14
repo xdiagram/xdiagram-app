@@ -1,5 +1,5 @@
 import type { ColKind } from "../core/tauri-api.service";
-import type { FilterNode, WireNode } from "./model";
+import { type FilterNode, SEARCH_COLUMN, type WireNode } from "./model";
 import { formatMoment, resolvePoint, resolveSpan } from "./relative-dates";
 import { isDate } from "./validate";
 
@@ -14,6 +14,10 @@ export function toWire(node: FilterNode | null, now: Date, kindOf: (column: stri
     const items = node.items.map((i) => toWire(i, now, kindOf)).filter((i): i is WireNode => !!i);
     if (!items.length) return null;
     return { t: "group", id: node.id, op: node.op, ...(node.not ? { not: true } : {}), items };
+  }
+  if (node.column === SEARCH_COLUMN) {
+    const text = typeof node.args[0] === "string" ? node.args[0] : "";
+    return text.trim() ? { t: "search", id: node.id, text, ...(node.cs ? { cs: true } : {}) } : null;
   }
   const kind = kindOf(node.column);
   const timestamp = kind === "timestamp" || kind === "timestamptz";

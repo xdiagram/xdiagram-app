@@ -1,4 +1,4 @@
-import type { Arg, CondNode, FilterNode } from "./model";
+import { type Arg, type CondNode, type FilterNode, SEARCH_COLUMN } from "./model";
 import { opInfo } from "./operators";
 import { pointLabel, spanLabel } from "./relative-dates";
 
@@ -6,6 +6,7 @@ const argText = (a: Arg) => (typeof a === "string" ? a : pointLabel(a));
 
 /** The three parts of a condition's chip: column, operator, value. */
 export function condLabel(c: CondNode): { column: string; op: string; value: string } {
+  if (c.column === SEARCH_COLUMN) return { column: "any column", op: "contains", value: `${argText(c.args[0] ?? "")}${c.cs ? " (case-sensitive)" : ""}` };
   const info = opInfo(c.op);
   let value = "";
   if (c.op === "range" && c.span) return { column: c.column, op: "", value: spanLabel(c.span) };

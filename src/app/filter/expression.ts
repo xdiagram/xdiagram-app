@@ -1,5 +1,5 @@
 import type { ColKind } from "../core/tauri-api.service";
-import { type Arg, type CondNode, type FilterNode, type GroupNode, newId, type Op, type Span } from "./model";
+import { type Arg, type CondNode, type FilterNode, type GroupNode, newId, type Op, SEARCH_COLUMN, type Span } from "./model";
 import { parsePoint, printPoint } from "./relative-dates";
 
 /**
@@ -45,9 +45,6 @@ const OPS: [string, Op | "span"][] = [
   [":", "span"],
 ];
 const TEXT_OPS: Op[] = ["contains", "notContains", "startsWith", "endsWith", "regex"];
-
-/** The node for `any ~ text` (search in every text column), a condition on the pseudo-column. */
-export const SEARCH_COLUMN = "*";
 
 class Parser {
   pos = 0;

@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, inject, signal, viewChild
 
 import { displayTable, type VRef } from "../diagram/view-model";
 import { QUICK_HELP } from "../filter/help";
+import { highlightTerms, segments } from "../filter/highlight";
 import { isOrderedKind } from "../filter/kinds";
 import { newId, type Op } from "../filter/model";
 import { printQuick } from "../filter/quick-syntax";
@@ -135,7 +136,7 @@ function readHeight(): number {
                   <td [class.null]="cell === null" [class.fk]="!!fk && cell !== null && !isCut(ri, ci)" [class.cut]="isCut(ri, ci)"
                     [class.picked]="isPicked(ri, ci)"
                     [title]="isCut(ri, ci) ? 'Shortened: the full value has more than 4000 characters' : (cell ?? 'NULL')"
-                    (click)="onCell($event, ri, ci, fk)" (contextmenu)="openRowMenu($event, ri, ci)">{{ cell ?? "NULL" }}</td>
+                    (click)="onCell($event, ri, ci, fk)" (contextmenu)="openRowMenu($event, ri, ci)">@if (marks()?.[ri]?.[ci]; as segs) {@for (s of segs; track $index) {<span [class.hit]="s.hit">{{ s.text }}</span>}} @else {<ng-container>{{ cell ?? "NULL" }}</ng-container>}</td>
                 }
               </tr>
             } @empty {
@@ -285,6 +286,7 @@ function readHeight(): number {
     .filters input.issue { border-color: var(--danger); }
     td.cut { color: var(--text-muted); }
     td.picked { outline: 2px solid var(--accent); outline-offset: -2px; }
+    td .hit { background: var(--highlight); color: inherit; border-radius: 2px; }
     .ref-menu .v { color: var(--accent); }
     .count { font-variant-numeric: tabular-nums; }
     td { cursor: copy; }
@@ -376,6 +378,21 @@ export class DataDrawerComponent {
   protected readonly quickHelp = QUICK_HELP;
 
   protected readonly filtered = computed(() => hasActive(this.store.current()?.where ?? null));
+
+  /** Matched text per cell (searches everywhere, contains / starts / ends / equals in their column); null: plain. */
+  protected readonly marks = computed(() => {
+    const r = this.store.result();
+    const { all, byColumn } = highlightTerms(this.store.current()?.where ?? null);
+    if (!r || (!all.length && !byColumn.size)) return null;
+    const terms = r.columns.map((c) => [...all, ...(byColumn.get(c.name) ?? [])]);
+    return r.rows.map((row) =>
+      row.map((cell, ci) => {
+        if (cell === null || !terms[ci].length) return null;
+        const segs = segments(cell, terms[ci]);
+        return segs.some((s) => s.hit) ? segs : null;
+      }),
+    );
+  });
 
   protected label(loc: BrowseLocation): string {
     const filter = hasActive(loc.where) ? nodeText(loc.where) : "";

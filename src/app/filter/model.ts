@@ -32,7 +32,14 @@ export type BoolOp = "and" | "or";
 /** What Rust receives. */
 export type WireNode =
   | { t: "group"; id: string; op: BoolOp; not?: boolean; items: WireNode[] }
-  | { t: "cond"; id: string; column: string; op: Op; args: string[]; cs?: boolean };
+  | { t: "cond"; id: string; column: string; op: Op; args: string[]; cs?: boolean }
+  | { t: "search"; id: string; text: string; columns?: string[]; cs?: boolean };
+
+/**
+ * The pseudo-column of a search in every text column (`any ~ text`): in the UI tree it is a
+ * `contains` condition on this column, sent as a `search` node.
+ */
+export const SEARCH_COLUMN = "*";
 
 /** A moment relative to now: `{ ago: 7, unit: "d" }` is seven days ago. */
 export interface RelativePoint {

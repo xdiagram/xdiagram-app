@@ -1,4 +1,5 @@
-import { complete, parseExpression, ParseError, printExpression, SEARCH_COLUMN } from "./expression";
+import { complete, parseExpression, ParseError, printExpression } from "./expression";
+import { SEARCH_COLUMN } from "./model";
 import type { FilterNode } from "./model";
 
 const strip = (n: FilterNode): unknown => JSON.parse(JSON.stringify(n, (k, v) => (k === "id" ? undefined : v)));

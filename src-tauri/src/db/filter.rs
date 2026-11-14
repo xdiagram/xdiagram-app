@@ -76,7 +76,20 @@ pub enum FilterNode {
         #[serde(default)]
         cs: bool,
     },
+    /// The text in any of `columns` (empty: every text-like column): contains for text, equal
+    /// for numbers, dates and UUIDs when the text is one.
+    Search {
+        id: String,
+        text: String,
+        #[serde(default)]
+        columns: Vec<String>,
+        #[serde(default)]
+        cs: bool,
+    },
 }
+
+/// Columns a search may name (each takes a parameter: MySQL cannot reuse one).
+pub const MAX_SEARCH_COLUMNS: usize = 64;
 
 /// A condition that cannot run, and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -144,7 +157,57 @@ impl Render {
                 Some(if *not { format!("NOT {}", parenthesize(&joined)) } else { joined })
             }
             FilterNode::Cond { id, column, op, args, cs } => self.cond(s, id, column, *op, args, *cs),
+            FilterNode::Search { id, text, columns, cs } => self.search(s, id, text, columns, *cs),
         }
+    }
+
+    fn search(&mut self, s: &Scope, id: &str, text: &str, columns: &[String], cs: bool) -> Option<String> {
+        if text.trim().is_empty() {
+            return None;
+        }
+        if text.chars().count() > MAX_VALUE_CHARS {
+            return self.issue(id, format!("Values are limited to {MAX_VALUE_CHARS} characters"));
+        }
+        let d = self.d;
+        let mut cols: Vec<&BrowseColumn> = Vec::new();
+        if columns.len() > MAX_SEARCH_COLUMNS {
+            return self.issue(id, format!("A search can name {MAX_SEARCH_COLUMNS} columns at most"));
+        }
+        // All columns: no cap of its own (a very wide table meets the parameter limit, which is reported).
+        if columns.is_empty() {
+            cols.extend(s.meta.columns.iter());
+        } else {
+            for name in columns {
+                match s.meta.column(name) {
+                    Some(c) => cols.push(c),
+                    None => return self.issue(id, format!("Unknown column “{name}”")),
+                }
+            }
+        }
+        let mut parts = Vec::new();
+        for col in cols {
+            let expr = format!("{}.{}", d.quote(&s.alias), d.quote(&col.name));
+            match col.kind {
+                ColKind::Text | ColKind::Enum | ColKind::Json | ColKind::Other => {
+                    let t = d.text_expr(&expr, col.kind, &col.type_name);
+                    parts.push(self.text_match(&t, Anchor::Contains, text, cs));
+                }
+                ColKind::Binary => {}
+                // Numbers, dates, UUIDs: equal, when the text is one (an index can serve it).
+                _ => {
+                    if let Ok(v) = d.check_value(col.kind, &col.type_name, text)
+                        && let Some(p) = d.typed_param(col.kind, &col.type_name, self.params.len() + 1, &v)
+                    {
+                        self.params.push(v);
+                        parts.push(format!("{expr} = {p}"));
+                    }
+                }
+            }
+        }
+        if parts.is_empty() {
+            return Some("1 = 0".into());
+        }
+        Some(if parts.len() == 1 { parts.pop().unwrap() } else { format!("({})", parts.join(" OR ")) })
     }
 
     fn cond(&mut self, s: &Scope, id: &str, column: &str, op: Op, args: &[String], cs: bool) -> Option<String> {
@@ -294,7 +357,7 @@ fn parenthesize(sql: &str) -> String {
 
 fn node_id(node: &FilterNode) -> &str {
     match node {
-        FilterNode::Group { id, .. } | FilterNode::Cond { id, .. } => id,
+        FilterNode::Group { id, .. } | FilterNode::Cond { id, .. } | FilterNode::Search { id, .. } => id,
     }
 }
 
@@ -498,6 +561,28 @@ mod tests {
         let parsed: FilterNode = serde_json::from_str(json).unwrap();
         assert_eq!(render(Dialect::Mssql, &m, &parsed).unwrap().0, "[t0].[id] NOT IN (@P1)");
         assert!(serde_json::from_str::<FilterNode>(r#"{"t":"cond","id":"c","column":"id","op":"drop"}"#).is_err());
+    }
+
+    #[test]
+    fn search_every_text_column() {
+        let m = meta(Dialect::Postgres, &[("id", "bigint"), ("email", "text"), ("born", "date"), ("doc", "jsonb"), ("raw", "bytea")]);
+        let f = FilterNode::Search { id: "s".into(), text: "42".into(), columns: vec![], cs: false };
+        let (sql, params) = render(Dialect::Postgres, &m, &f).unwrap();
+        assert_eq!(sql, "(\"t0\".\"id\" = ($1::text)::bigint OR \"t0\".\"email\" ILIKE $2 ESCAPE '!' OR (\"t0\".\"doc\")::text ILIKE $3 ESCAPE '!')");
+        assert_eq!(params, vec!["42", "%42%", "%42%"]);
+        let f = FilterNode::Search { id: "s".into(), text: "ann".into(), columns: vec!["email".into()], cs: true };
+        assert_eq!(render(Dialect::Mysql, &meta(Dialect::Mysql, &[("email", "varchar(9)")]), &f).unwrap().0, "`t0`.`email` LIKE (? COLLATE utf8mb4_bin) ESCAPE '!'");
+        let unknown = FilterNode::Search { id: "s".into(), text: "x".into(), columns: vec!["nope".into()], cs: false };
+        assert!(render(Dialect::Postgres, &m, &unknown).is_err());
+        let only_numbers = meta(Dialect::Postgres, &[("id", "bigint")]);
+        let f = FilterNode::Search { id: "s".into(), text: "ann".into(), columns: vec![], cs: false };
+        assert_eq!(render(Dialect::Postgres, &only_numbers, &f).unwrap().0, "1 = 0");
+        // A wide table: every column is searched, none skipped.
+        let names: Vec<String> = (0..100).map(|i| format!("c{i}")).collect();
+        let wide = meta(Dialect::Postgres, &names.iter().map(|n| (n.as_str(), "text")).collect::<Vec<_>>());
+        assert_eq!(render(Dialect::Postgres, &wide, &f).unwrap().1.len(), 100);
+        let named = FilterNode::Search { id: "s".into(), text: "ann".into(), columns: names, cs: false };
+        assert!(render(Dialect::Postgres, &wide, &named).is_err(), "naming more than {MAX_SEARCH_COLUMNS} columns is reported");
     }
 
     /// Every operator against real data, on SQLite (the engine the tests can run).

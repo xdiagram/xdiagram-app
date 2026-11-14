@@ -131,8 +131,11 @@ pub fn cap_rows(rows: Vec<Vec<Option<String>>>, limit: usize) -> (Vec<Vec<Option
     (rows, has_more, cut.len() as u32)
 }
 
+/// Rows as text cells (`None`: NULL).
+pub type TextRows = Vec<Vec<Option<String>>>;
+
 /// `cap_rows`, with the `[row, column]` of each value that was cut.
-pub fn cap_rows_at(rows: Vec<Vec<Option<String>>>, limit: usize) -> (Vec<Vec<Option<String>>>, bool, Vec<[usize; 2]>) {
+pub fn cap_rows_at(rows: TextRows, limit: usize) -> (TextRows, bool, Vec<[usize; 2]>) {
     let has_more = rows.len() > limit;
     let mut cut_at = Vec::new();
     let rows = rows

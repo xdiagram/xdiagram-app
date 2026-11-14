@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, input, output, signal } f
 
 import type { BrowseColumn, Engine, FilterIssue } from "../../core/tauri-api.service";
 import { kindOf } from "../../filter/kinds";
-import { type CondNode, type FilterNode, type GroupNode, newId, type Op } from "../../filter/model";
+import { type CondNode, type FilterNode, type GroupNode, newId, type Op, SEARCH_COLUMN } from "../../filter/model";
 import { opsFor } from "../../filter/operators";
 import { condLabel, nodeText } from "../../filter/printer";
 import { addNode, hasActive, removeNode, replaceNode, toggleOff } from "../../filter/tree";
@@ -34,6 +34,7 @@ interface Editing {
       </button>
     }
     @for (n of tree().items; track n.id) {
+      @if (n.id !== searchNode()?.id) {
       <span class="chip" [class.off]="n.off" [class.bad]="!!issueOf(n)" [class.nav]="isNav(n)" [title]="issueOf(n) ?? (isNav(n) ? 'From following a foreign key' : '')">
         <input type="checkbox" [checked]="!n.off" (change)="emit(toggle(n.id))" [attr.aria-label]="(n.off ? 'Apply ' : 'Switch off ') + text(n)" />
         <button type="button" class="body" (click)="edit(n, $event)">
@@ -50,11 +51,20 @@ interface Editing {
         </button>
         <button type="button" class="x" (click)="emit(remove(n.id))" [attr.aria-label]="'Remove ' + text(n)">×</button>
       </span>
+      }
     }
     <button type="button" class="add" (click)="addCondition($event)" [disabled]="!columns().length">+ Filter</button>
     <button type="button" class="add" (click)="addGroup($event)" [disabled]="!columns().length" title="Conditions of which any one must match">+ Group</button>
     @if (tree().items.length) {
       <button type="button" class="clear" (click)="emit({ t: 'group', id: tree().id, op: 'and', items: [] })">Clear</button>
+    }
+    <input type="search" class="search" [class.on]="!!searchText()" placeholder="Search all columns" spellcheck="false" [value]="searchText()"
+      [title]="searchTitle" aria-label="Search all columns (Enter applies)" (keydown.enter)="search($any($event.target).value)"
+      (search)="$any($event.target).value || search('')" />
+    @if (searchNode(); as s) {
+      <label class="cs" title="Match upper and lower case exactly">
+        <input type="checkbox" [checked]="!!s.cs" (change)="setSearchCs($any($event.target).checked)" /> Aa
+      </label>
     }
     @if (editing(); as e) {
       <div class="scrim" (click)="cancel()"></div>
@@ -111,6 +121,11 @@ interface Editing {
     .match { border-style: solid; color: var(--text); font-weight: 600; }
     .clear { border: 0; color: var(--text-muted); }
     .add:disabled { opacity: 0.5; cursor: default; }
+    .search { margin-left: auto; width: 190px; font: inherit; font-size: 12px; border: 1px solid var(--border); border-radius: 14px;
+      padding: 2px 9px; background: var(--input-bg); color: var(--text); }
+    .search.on { border-color: var(--accent); }
+    .cs { display: flex; align-items: center; gap: 3px; color: var(--text-muted); cursor: pointer; }
+    .cs input { margin: 0; }
     .scrim { position: fixed; inset: 0; z-index: 19; }
     .editor { position: fixed; z-index: 20; min-width: 320px; max-width: min(640px, calc(100vw - 16px)); padding: 10px; background: var(--panel);
       border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-md); display: flex; flex-direction: column; gap: 8px; }
@@ -138,6 +153,34 @@ export class FilterBarComponent {
 
   protected readonly label = condLabel;
   protected readonly text = nodeText;
+  protected readonly searchTitle =
+    "Rows where any column contains this text (text columns by their content, other columns when the text is a valid value for them). Enter applies; empty clears.";
+
+  /** The search box's condition: the first active "any column contains" directly under the root. */
+  protected readonly searchNode = computed(
+    () => this.tree().items.find((n): n is CondNode => n.t === "cond" && n.column === SEARCH_COLUMN && !n.off) ?? null,
+  );
+  protected readonly searchText = computed(() => {
+    const v = this.searchNode()?.args[0];
+    return typeof v === "string" ? v : "";
+  });
+
+  protected search(text: string): void {
+    const t = text.trim() ? text : "";
+    const cur = this.searchNode();
+    if (t === this.searchText()) return;
+    if (!t) {
+      if (cur) this.emit(removeNode(this.tree(), cur.id));
+      return;
+    }
+    const node: CondNode = { t: "cond", id: cur?.id ?? newId(), column: SEARCH_COLUMN, op: "contains", args: [t], ...(cur?.cs ? { cs: true } : {}) };
+    this.emit(cur ? replaceNode(this.tree(), cur.id, node) : addNode(this.tree(), node));
+  }
+
+  protected setSearchCs(on: boolean): void {
+    const cur = this.searchNode();
+    if (cur) this.emit(replaceNode(this.tree(), cur.id, { ...cur, cs: on || undefined }));
+  }
 
   protected emit(tree: GroupNode): void {
     this.treeChange.emit(tree);

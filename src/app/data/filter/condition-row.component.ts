@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, input, output } from "@an
 
 import type { BrowseColumn, ColKind, Engine } from "../../core/tauri-api.service";
 import { isDateKind, kindOf } from "../../filter/kinds";
-import type { Arg, CondNode, Op, Span } from "../../filter/model";
+import { type Arg, type CondNode, type Op, SEARCH_COLUMN, type Span } from "../../filter/model";
 import { opInfo, opsFor } from "../../filter/operators";
 import { parsePoint, printPoint } from "../../filter/relative-dates";
 import { treeIssues } from "../../filter/validate";
@@ -23,20 +23,21 @@ const PERIODS: { value: string; label: string }[] = [
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <select class="col" [value]="node().column" (change)="setColumn($any($event.target).value)" aria-label="Column">
+      <option [value]="anyColumn" [selected]="node().column === anyColumn" title="Rows where any column contains the text">(any column)</option>
       @for (c of columns(); track c.name) {
-        <option [value]="c.name">{{ c.name }}</option>
+        <option [value]="c.name" [selected]="c.name === node().column">{{ c.name }}</option>
       }
     </select>
     <select class="op" [value]="opValue()" (change)="setOp($any($event.target).value)" aria-label="Operator">
       @for (o of ops(); track o.value) {
-        <option [value]="o.value">{{ o.label }}</option>
+        <option [value]="o.value" [selected]="o.value === opValue()">{{ o.label }}</option>
       }
     </select>
     @switch (shape()) {
       @case ("period") {
         <select class="val" [value]="periodValue()" (change)="setPeriod($any($event.target).value)" aria-label="Period">
           @for (p of periods; track p.value) {
-            <option [value]="p.value">{{ p.label }}</option>
+            <option [value]="p.value" [selected]="p.value === periodValue()">{{ p.label }}</option>
           }
         </select>
         @if (periodValue() === "lastDays") {
@@ -56,7 +57,7 @@ const PERIODS: { value: string; label: string }[] = [
           <select class="val" [value]="argText(0)" (change)="setArg(0, $any($event.target).value)" aria-label="Value">
             <option value="">…</option>
             @for (v of enumValues(); track v) {
-              <option [value]="v">{{ v }}</option>
+              <option [value]="v" [selected]="v === argText(0)">{{ v }}</option>
             }
           </select>
         } @else {
@@ -110,6 +111,7 @@ export class ConditionRowComponent {
   readonly submit = output<void>();
 
   protected readonly periods = PERIODS;
+  protected readonly anyColumn = SEARCH_COLUMN;
 
   private readonly column = computed(() => this.columns().find((c) => c.name === this.node().column) ?? null);
   protected readonly kind = computed<ColKind>(() => {
@@ -118,6 +120,7 @@ export class ConditionRowComponent {
   });
   protected readonly enumValues = computed(() => this.column()?.enumValues ?? []);
   protected readonly ops = computed(() => {
+    if (this.node().column === SEARCH_COLUMN) return [{ value: "contains", label: "contains" }];
     const list = opsFor(this.kind(), this.engine(), this.column()?.nullable ?? true).map((o) => ({ value: o.op as string, label: o.label }));
     return isDateKind(this.kind()) ? [{ value: "period", label: "is in" }, ...list] : list;
   });
@@ -177,6 +180,10 @@ export class ConditionRowComponent {
   }
 
   protected setColumn(name: string): void {
+    if (name === SEARCH_COLUMN) {
+      const first = this.node().args[0];
+      return this.emit({ column: name, op: "contains", args: [typeof first === "string" ? first : ""], span: undefined });
+    }
     const col = this.columns().find((c) => c.name === name);
     const kind = col ? kindOf(col, this.engine()) : "text";
     const allowed = opsFor(kind, this.engine(), col?.nullable ?? true).map((o) => o.op as string);
