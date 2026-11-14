@@ -3,12 +3,11 @@
 //! covers the connection's database, and the JSON carries no schema names.
 
 use std::collections::{BTreeMap, HashMap};
-use std::time::Instant;
 
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, Row, SslOpts, Value};
 
-use super::browse::{truncate_cell, BrowseColumn, BrowseRequest, BrowseResult, MAX_LIMIT};
+use super::browse::BrowseColumn;
 use super::connect::{non_empty_field, resolve_password, ConnectionInput, SslMode};
 use super::sql::{classify, ColKind, Dialect};
 use super::types::*;
@@ -381,10 +380,6 @@ pub async fn fetch_schema_json(conn: &mut Conn) -> Result<DatabaseSchema, AppErr
 // Browsing
 // ---------------------------------------------------------------------------------------------
 
-fn quote(name: &str) -> String {
-    format!("`{}`", name.replace('`', "``"))
-}
-
 fn value_text(v: Value) -> Option<String> {
     Some(match v {
         Value::NULL => return None,
@@ -492,102 +487,20 @@ pub async fn row_estimate(conn: &mut Conn, db: &str, table: &str) -> Result<f64,
 /// Runs one SELECT in a read-only transaction (time-limited where the server supports it) and
 /// returns its cells as text.
 pub async fn fetch_text(conn: &mut Conn, sql: &str, params: &[String], timeout_ms: u32) -> Result<Vec<Vec<Option<String>>>, AppError> {
-    let _ = conn.query_drop(format!("SET SESSION MAX_EXECUTION_TIME = {timeout_ms}")).await;
+    // MySQL limits SELECTs with MAX_EXECUTION_TIME (ms); MariaDB has max_statement_time (s).
+    if conn.query_drop(format!("SET SESSION MAX_EXECUTION_TIME = {timeout_ms}")).await.is_err() {
+        let _ = conn.query_drop(format!("SET SESSION max_statement_time = {}", timeout_ms.div_ceil(1000))).await;
+    }
+    Ok(fetch_rows(conn, sql, params).await?)
+}
+
+/// One SELECT in a read-only transaction, cells as text (the caller sets the time limit).
+pub async fn fetch_rows(conn: &mut Conn, sql: &str, params: &[String]) -> Result<Vec<Vec<Option<String>>>, mysql_async::Error> {
     conn.query_drop("START TRANSACTION READ ONLY").await?;
     let values: Vec<Value> = params.iter().map(|p| Value::from(p.as_str())).collect();
     let result: Result<Vec<Row>, _> = conn.exec(sql, values).await;
     let _ = conn.query_drop("ROLLBACK").await;
     Ok(result?.into_iter().map(|r| r.unwrap().into_iter().map(value_text).collect()).collect())
-}
-
-pub async fn browse(conn: &mut Conn, req: &BrowseRequest) -> Result<BrowseResult, AppError> {
-    let started = Instant::now();
-    // The DBML has no schemas for MySQL; tables live in the connection's database.
-    let db = resolve_db(conn, &req.schema).await?;
-    let columns = table_columns(conn, &db, &req.table).await?;
-    if columns.is_empty() {
-        return Err(AppError::Invalid(format!("Table {}.{} not found", db, req.table)));
-    }
-    let known = |c: &str| columns.iter().any(|x| x.name == c);
-    let mut conditions = Vec::new();
-    let mut params: Vec<Value> = Vec::new();
-    for f in &req.filters {
-        if !known(&f.column) {
-            return Err(AppError::Invalid(format!("Unknown column {}", f.column)));
-        }
-        match &f.value {
-            Some(v) => {
-                conditions.push(format!("CAST({} AS CHAR) = ?", quote(&f.column)));
-                params.push(Value::from(v.as_str()));
-            }
-            None => conditions.push(format!("{} IS NULL", quote(&f.column))),
-        }
-    }
-    let order: Vec<(String, bool)> = match &req.order_by {
-        Some(o) if known(&o.column) => vec![(o.column.clone(), o.desc)],
-        Some(o) => return Err(AppError::Invalid(format!("Unknown column {}", o.column))),
-        None => {
-            let pk: Vec<Row> = conn
-                .exec(
-                    "select column_name from information_schema.key_column_usage
-                     where table_schema = ? and table_name = ? and constraint_name = 'PRIMARY' order by ordinal_position",
-                    (&db, &req.table),
-                )
-                .await?;
-            pk.iter().filter_map(|r| text(r, 0)).map(|c| (c, false)).collect()
-        }
-    };
-    let estimate = row_estimate(conn, &db, &req.table).await?;
-    let limit = req.limit.clamp(1, MAX_LIMIT);
-    let mut sql = format!(
-        "SELECT {} FROM {}.{}",
-        columns.iter().map(|c| quote(&c.name)).collect::<Vec<_>>().join(", "),
-        quote(&db),
-        quote(&req.table)
-    );
-    if !conditions.is_empty() {
-        sql.push_str(&format!(" WHERE {}", conditions.join(" AND ")));
-    }
-    if !order.is_empty() {
-        let keys: Vec<String> = order.iter().map(|(c, d)| format!("{}{}", quote(c), if *d { " DESC" } else { "" })).collect();
-        sql.push_str(&format!(" ORDER BY {}", keys.join(", ")));
-    }
-    sql.push_str(&format!(" LIMIT {} OFFSET {}", limit + 1, req.offset));
-
-    // Read-only transaction; SELECTs time out after 10 s (MySQL; ignored by servers without it).
-    let _ = conn.query_drop(format!("SET SESSION MAX_EXECUTION_TIME = {}", req.timeout() * 1000)).await;
-    conn.query_drop("START TRANSACTION READ ONLY").await?;
-    let result: Result<Vec<Row>, _> = conn.exec(sql, params).await;
-    let _ = conn.query_drop("ROLLBACK").await;
-    let result = result?;
-
-    let has_more = result.len() > limit as usize;
-    let mut truncated = 0;
-    let rows = result
-        .into_iter()
-        .take(limit as usize)
-        .map(|r| {
-            r.unwrap()
-                .into_iter()
-                .map(|v| {
-                    value_text(v).map(|s| {
-                        let (s, cut) = truncate_cell(s);
-                        truncated += cut as u32;
-                        s
-                    })
-                })
-                .collect()
-        })
-        .collect();
-    Ok(BrowseResult {
-        columns,
-        rows,
-        has_more,
-        row_estimate: estimate,
-        ordered_by: order.into_iter().map(|(c, _)| c).collect(),
-        truncated_cells: truncated,
-        elapsed_ms: started.elapsed().as_millis() as u64,
-    })
 }
 
 #[cfg(test)]

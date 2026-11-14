@@ -3,13 +3,13 @@
 //! `SET DEFAULT` (the connector passes `SET_NULL`, which DBML rejects, breaking the document).
 
 use std::collections::{BTreeMap, HashMap};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tiberius::{AuthMethod, Client, Config, EncryptionLevel, Row, ToSql};
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
-use super::browse::{truncate_cell, BrowseColumn, BrowseRequest, BrowseResult, MAX_LIMIT};
+use super::browse::BrowseColumn;
 use super::connect::{non_empty_field, resolve_password, ConnectionInput, SslMode};
 use super::sql::{classify, Dialect};
 use super::types::*;
@@ -73,7 +73,7 @@ fn tls_settings(mode: SslMode) -> (EncryptionLevel, bool) {
 
 /// A read blocked by another session's locks gives up on the server after `timeout_s`, instead
 /// of holding locks there after the app stopped waiting.
-async fn limit_lock_wait(client: &mut MsClient, timeout_s: u64) -> Result<(), AppError> {
+pub async fn limit_lock_wait(client: &mut MsClient, timeout_s: u64) -> Result<(), AppError> {
     client.simple_query(format!("SET LOCK_TIMEOUT {}", timeout_s.saturating_mul(1000).min(i32::MAX as u64))).await?.into_results().await?;
     Ok(())
 }
@@ -358,21 +358,6 @@ pub async fn fetch_schema_json(client: &mut MsClient, schemas: &[String]) -> Res
 // Browsing
 // ---------------------------------------------------------------------------------------------
 
-fn quote(name: &str) -> String {
-    format!("[{}]", name.replace(']', "]]"))
-}
-
-/// Text form of a column: ISO dates, hex for binaries, plain conversion otherwise.
-fn as_text(column: &str, type_name: &str) -> String {
-    let q = quote(column);
-    match type_name {
-        "binary" | "varbinary" | "image" | "timestamp" | "rowversion" => format!("CONVERT(NVARCHAR(MAX), {q}, 1)"),
-        "datetime" | "datetime2" | "smalldatetime" | "datetimeoffset" | "date" | "time" => format!("CONVERT(NVARCHAR(MAX), {q}, 126)"),
-        "geography" | "geometry" | "hierarchyid" => format!("{q}.ToString()"),
-        _ => format!("CONVERT(NVARCHAR(MAX), {q})"),
-    }
-}
-
 /// The schema a DBML schema name stands for (`public`/none = `dbo`).
 pub fn resolve_schema(schema: &str) -> String {
     if schema.is_empty() || schema == "public" { "dbo".to_string() } else { schema.to_string() }
@@ -439,101 +424,16 @@ pub async fn row_estimate(client: &mut MsClient, schema: &str, table: &str) -> R
 /// Only generated SELECTs reach this; SQL Server has no read-only transaction mode to add.
 pub async fn fetch_text(client: &mut MsClient, sql: &str, params: &[String], timeout_s: u64) -> Result<Vec<Vec<Option<String>>>, AppError> {
     limit_lock_wait(client, timeout_s).await?;
-    let values: Vec<&dyn ToSql> = params.iter().map(|v| v as &dyn ToSql).collect();
-    let result = tokio::time::timeout(Duration::from_secs(timeout_s), rows(client, sql, &values))
+    tokio::time::timeout(Duration::from_secs(timeout_s), fetch_rows(client, sql, params))
         .await
-        .map_err(|_| AppError::Invalid(format!("SQL Server: the query took longer than {timeout_s} s")))??;
-    Ok(result.iter().map(|r| (0..r.columns().len()).map(|i| s(r, i)).collect()).collect())
+        .map_err(|_| AppError::Invalid(format!("SQL Server: the query took longer than {timeout_s} s")))?
 }
 
-pub async fn browse(client: &mut MsClient, req: &BrowseRequest) -> Result<BrowseResult, AppError> {
-    let started = Instant::now();
-    let schema_name = resolve_schema(&req.schema);
-    let columns = table_columns(client, &schema_name, &req.table).await?;
-    if columns.is_empty() {
-        return Err(AppError::Invalid(format!("Table {}.{} not found", schema_name, req.table)));
-    }
-    let type_of = |c: &str| columns.iter().find(|x| x.name == c).map(|x| x.type_name.clone());
-    let mut conditions = Vec::new();
-    let mut values: Vec<String> = Vec::new();
-    for f in &req.filters {
-        let ty = type_of(&f.column).ok_or_else(|| AppError::Invalid(format!("Unknown column {}", f.column)))?;
-        match &f.value {
-            Some(v) => {
-                values.push(v.clone());
-                conditions.push(format!("{} = @P{}", as_text(&f.column, &ty), values.len()));
-            }
-            None => conditions.push(format!("{} IS NULL", quote(&f.column))),
-        }
-    }
-    let order: Vec<(String, bool)> = match &req.order_by {
-        Some(o) if type_of(&o.column).is_some() => vec![(o.column.clone(), o.desc)],
-        Some(o) => return Err(AppError::Invalid(format!("Unknown column {}", o.column))),
-        None => rows(
-            client,
-            "SELECT c.name FROM sys.indexes i
-             JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
-             JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
-             WHERE i.is_primary_key = 1 AND i.object_id = OBJECT_ID(QUOTENAME(@P1) + '.' + QUOTENAME(@P2)) ORDER BY ic.key_ordinal",
-            &[&schema_name, &req.table],
-        )
-        .await?
-        .iter()
-        .filter_map(|r| s(r, 0))
-        .map(|c| (c, false))
-        .collect(),
-    };
-    let limit = req.limit.clamp(1, MAX_LIMIT);
-    let mut sql = format!(
-        "SELECT {} FROM {}.{}",
-        columns.iter().map(|c| as_text(&c.name, &c.type_name)).collect::<Vec<_>>().join(", "),
-        quote(&schema_name),
-        quote(&req.table)
-    );
-    if !conditions.is_empty() {
-        sql.push_str(&format!(" WHERE {}", conditions.join(" AND ")));
-    }
-    let keys = if order.is_empty() {
-        "(SELECT NULL)".to_string()
-    } else {
-        order.iter().map(|(c, d)| format!("{}{}", quote(c), if *d { " DESC" } else { "" })).collect::<Vec<_>>().join(", ")
-    };
-    sql.push_str(&format!(" ORDER BY {keys} OFFSET {} ROWS FETCH NEXT {} ROWS ONLY", req.offset, limit + 1));
-
-    let params: Vec<&dyn ToSql> = values.iter().map(|v| v as &dyn ToSql).collect();
-    let timeout_s = req.timeout() as u64;
-    limit_lock_wait(client, timeout_s).await?;
-    let result = tokio::time::timeout(Duration::from_secs(timeout_s), rows(client, &sql, &params))
-        .await
-        .map_err(|_| AppError::Invalid(format!("SQL Server: the query took longer than {timeout_s} s")))??;
-    let estimate = row_estimate(client, &schema_name, &req.table).await?;
-
-    let has_more = result.len() > limit as usize;
-    let mut truncated = 0;
-    let rows_out = result
-        .iter()
-        .take(limit as usize)
-        .map(|r| {
-            (0..columns.len())
-                .map(|i| {
-                    s(r, i).map(|v| {
-                        let (v, cut) = truncate_cell(v);
-                        truncated += cut as u32;
-                        v
-                    })
-                })
-                .collect()
-        })
-        .collect();
-    Ok(BrowseResult {
-        columns,
-        rows: rows_out,
-        has_more,
-        row_estimate: estimate,
-        ordered_by: order.into_iter().map(|(c, _)| c).collect(),
-        truncated_cells: truncated,
-        elapsed_ms: started.elapsed().as_millis() as u64,
-    })
+/// One generated SELECT whose columns are all NVARCHAR, cells as text (no time limit here).
+pub async fn fetch_rows(client: &mut MsClient, sql: &str, params: &[String]) -> Result<Vec<Vec<Option<String>>>, AppError> {
+    let values: Vec<&dyn ToSql> = params.iter().map(|v| v as &dyn ToSql).collect();
+    let result = rows(client, sql, &values).await?;
+    Ok(result.iter().map(|r| (0..r.columns().len()).map(|i| s(r, i)).collect()).collect())
 }
 
 #[cfg(test)]
@@ -573,6 +473,5 @@ mod tests {
     fn filters() {
         assert_eq!(schema_filter("s.name", &[]), "");
         assert_eq!(schema_filter("s.name", &["dbo".into(), "sales".into()]), "AND s.name IN (@P1, @P2)");
-        assert_eq!(quote("we]ird"), "[we]]ird]");
     }
 }

@@ -110,6 +110,8 @@ impl Dialect {
     /// fallback comparison for types without a typed one compare against.
     pub fn text_expr(self, expr: &str, kind: ColKind, type_name: &str) -> String {
         match self {
+            // Text columns as they are, so a trigram index can serve LIKE / ILIKE.
+            Dialect::Postgres if kind == ColKind::Text => expr.to_string(),
             Dialect::Postgres => format!("({expr})::text"),
             Dialect::Mysql => match kind {
                 ColKind::Text | ColKind::Enum => expr.to_string(),

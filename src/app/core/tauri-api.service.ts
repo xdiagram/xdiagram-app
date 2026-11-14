@@ -454,5 +454,22 @@ export class TauriApi {
 export function errorMessage(err: unknown): string {
   if (typeof err === "string") return err;
   if (err instanceof Error) return err.message;
+  // Structured errors from Rust (filter problems) carry a readable message.
+  if (err && typeof err === "object" && typeof (err as { message?: unknown }).message === "string") return (err as { message: string }).message;
   return JSON.stringify(err);
+}
+
+/** A filter condition that cannot run, tied to its node id (see Rust `filter.rs`). */
+export interface FilterIssue {
+  node: string;
+  message: string;
+}
+
+/** The per-condition problems of a filter error, or [] for any other error. */
+export function filterIssues(err: unknown): FilterIssue[] {
+  if (err && typeof err === "object" && (err as { kind?: unknown }).kind === "filter") {
+    const issues = (err as { issues?: unknown }).issues;
+    if (Array.isArray(issues)) return issues as FilterIssue[];
+  }
+  return [];
 }

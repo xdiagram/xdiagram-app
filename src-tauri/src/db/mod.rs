@@ -10,6 +10,7 @@ pub mod mysql;
 pub mod profile;
 pub mod query;
 pub mod related;
+pub mod run;
 pub mod sql;
 pub mod sqlite;
 pub mod ssh;

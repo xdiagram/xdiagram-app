@@ -2,11 +2,12 @@
 
 use std::time::Instant;
 
-use super::browse::{browse_postgres, pg_fetch_text, pg_row_estimate, pg_table_columns, BrowseColumn, BrowseRequest, BrowseResult};
+use super::browse::{finish_page, pg_fetch_text, pg_row_estimate, pg_table_columns, plan_page, BrowseColumn, BrowseRequest, BrowseResult};
+use super::run::run;
 use super::profile::{profile_columns, sample_sql, ProfileRequest, TableProfile, DEFAULT_SAMPLE, MAX_SAMPLE};
 use super::query::{self, JoinRequest, Mode, Resolved};
 use super::sql::Dialect;
-use super::browse::{cap_rows, MAX_LIMIT};
+use super::browse::{cap_rows_at, MAX_LIMIT};
 use super::related::{self, LookupResult, RelatedRequest, RelatedResult, Step, MAX_LOOKUPS};
 use std::collections::HashMap;
 use super::connect::{ConnectionInput, Engine};
@@ -170,21 +171,12 @@ async fn introspect_raw(input: &ConnectionInput, schemas: &[String]) -> Result<D
     }
 }
 
+/// One page of a table's rows, filtered and sorted (see `browse.rs`), on any engine.
 pub async fn browse(input: &ConnectionInput, request: BrowseRequest) -> Result<BrowseResult, AppError> {
-    match input.engine {
-        Engine::Postgres => browse_postgres(&mut connect(input).await?, &request).await,
-        Engine::Mysql => {
-            let mut conn = mysql::connect(input).await?;
-            let result = mysql::browse(&mut conn, &request).await;
-            let _ = conn.disconnect().await;
-            result
-        }
-        Engine::Mssql => mssql::browse(&mut mssql::connect(input).await?, &request).await,
-        Engine::Sqlite => {
-            let input = input.clone();
-            blocking(move || sqlite::browse(&sqlite::open(&input)?, &request)).await
-        }
-    }
+    let started = Instant::now();
+    let tables = vec![(request.schema.clone(), request.table.clone())];
+    let req = request.clone();
+    run(input, tables, move |d, cat| Ok(vec![plan_page(d, cat, &req)?]), move |d, cat, ran| finish_page(d, cat, &request, ran, started)).await
 }
 
 fn not_found(schema: &str, table: &str) -> AppError {
@@ -364,14 +356,17 @@ pub async fn browse_join(input: &ConnectionInput, req: JoinRequest) -> Result<Br
             BrowseColumn { name: format!("{}.{}", c.alias, c.column), ..source.cloned().unwrap_or_default() }
         })
         .collect();
-    let (rows, has_more, truncated) = cap_rows(rows, req.limit.clamp(1, MAX_LIMIT) as usize);
+    let (rows, has_more, truncated_at) = cap_rows_at(rows, req.limit.clamp(1, MAX_LIMIT) as usize);
     Ok(BrowseResult {
         columns,
         rows,
         has_more,
         row_estimate: 0.0,
         ordered_by: Vec::new(),
-        truncated_cells: truncated,
+        sort: Vec::new(),
+        stable_order: false,
+        truncated_cells: truncated_at.len() as u32,
+        truncated_at,
         elapsed_ms: started.elapsed().as_millis() as u64,
     })
 }

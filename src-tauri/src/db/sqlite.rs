@@ -3,13 +3,12 @@
 //! carries no schema names (everything is in `main`), like the MySQL connector's output.
 
 use std::collections::BTreeMap;
-use std::time::Instant;
 
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 
-use super::browse::{truncate_cell, BrowseColumn, BrowseRequest, BrowseResult, MAX_LIMIT};
+use super::browse::BrowseColumn;
 use super::connect::{non_empty_field, ConnectionInput};
 use super::sql::{classify, Dialect};
 use super::types::*;
@@ -295,88 +294,6 @@ pub fn fetch_text(conn: &Connection, sql: &str, params: &[String]) -> Result<Vec
     Ok(out)
 }
 
-pub fn browse(conn: &Connection, req: &BrowseRequest) -> Result<BrowseResult, AppError> {
-    let started = Instant::now();
-    let mut info = conn.prepare(&format!("PRAGMA table_info({})", quote(&req.table)))?;
-    let cols: Vec<(String, String, i64)> = info
-        .query_map([], |r| Ok((r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get(5)?)))?
-        .collect::<Result<_, _>>()?;
-    if cols.is_empty() {
-        return Err(AppError::Invalid(format!("Table {} not found", req.table)));
-    }
-    let columns: Vec<BrowseColumn> = cols.iter().map(|c| BrowseColumn { name: c.0.clone(), type_name: c.1.to_lowercase(), ..Default::default() }).collect();
-    let known = |c: &str| columns.iter().any(|x| x.name == c);
-    let mut conditions = Vec::new();
-    let mut params: Vec<String> = Vec::new();
-    for f in &req.filters {
-        if !known(&f.column) {
-            return Err(AppError::Invalid(format!("Unknown column {}", f.column)));
-        }
-        match &f.value {
-            Some(v) => {
-                params.push(v.clone());
-                conditions.push(format!("CAST({} AS TEXT) = ?{}", quote(&f.column), params.len()));
-            }
-            None => conditions.push(format!("{} IS NULL", quote(&f.column))),
-        }
-    }
-    let order: Vec<(String, bool)> = match &req.order_by {
-        Some(o) if known(&o.column) => vec![(o.column.clone(), o.desc)],
-        Some(o) => return Err(AppError::Invalid(format!("Unknown column {}", o.column))),
-        None => {
-            let mut pk: Vec<&(String, String, i64)> = cols.iter().filter(|c| c.2 > 0).collect();
-            pk.sort_by_key(|c| c.2);
-            pk.into_iter().map(|c| (c.0.clone(), false)).collect()
-        }
-    };
-    let limit = req.limit.clamp(1, MAX_LIMIT);
-    let mut sql = format!("SELECT {} FROM {}", columns.iter().map(|c| quote(&c.name)).collect::<Vec<_>>().join(", "), quote(&req.table));
-    if !conditions.is_empty() {
-        sql.push_str(&format!(" WHERE {}", conditions.join(" AND ")));
-    }
-    if !order.is_empty() {
-        let keys: Vec<String> = order.iter().map(|(c, d)| format!("{}{}", quote(c), if *d { " DESC" } else { "" })).collect();
-        sql.push_str(&format!(" ORDER BY {}", keys.join(", ")));
-    }
-    sql.push_str(&format!(" LIMIT {} OFFSET {}", limit + 1, req.offset));
-
-    let mut stmt = conn.prepare(&sql)?;
-    let width = columns.len();
-    let mut truncated = 0;
-    let mut rows: Vec<Vec<Option<String>>> = Vec::new();
-    let mut cursor = stmt.query(rusqlite::params_from_iter(params.iter()))?;
-    while let Some(row) = cursor.next()? {
-        let mut out = Vec::with_capacity(width);
-        for i in 0..width {
-            let v = match row.get_ref(i)? {
-                ValueRef::Null => None,
-                ValueRef::Integer(n) => Some(n.to_string()),
-                ValueRef::Real(f) => Some(f.to_string()),
-                ValueRef::Text(t) => Some(String::from_utf8_lossy(t).into_owned()),
-                ValueRef::Blob(b) => Some(format!("\\x{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>())),
-            };
-            out.push(v.map(|s| {
-                let (s, cut) = truncate_cell(s);
-                truncated += cut as u32;
-                s
-            }));
-        }
-        rows.push(out);
-    }
-    let has_more = rows.len() > limit as usize;
-    rows.truncate(limit as usize);
-    let estimate: i64 = conn.query_row(&format!("SELECT count(*) FROM {}", quote(&req.table)), [], |r| r.get(0)).unwrap_or(0);
-    Ok(BrowseResult {
-        columns,
-        rows,
-        has_more,
-        row_estimate: estimate as f64,
-        ordered_by: order.into_iter().map(|(c, _)| c).collect(),
-        truncated_cells: truncated,
-        elapsed_ms: started.elapsed().as_millis() as u64,
-    })
-}
-
 /// Statements of a SQL script with the 1-based line each starts on, split on `;` outside
 /// strings, quoted identifiers and comments. The `;` itself is dropped; blank pieces are skipped.
 pub fn split_statements(sql: &str) -> Vec<(usize, String)> {
@@ -609,18 +526,35 @@ mod tests {
 
     #[test]
     fn browsing() {
+        use crate::db::browse::{finish_page, plan_page, BrowseRequest, SortKey};
+        use crate::db::run::run_sqlite;
         let c = sample();
-        let req = |filters: Vec<BrowseFilter>| BrowseRequest { schema: "public".into(), table: "users".into(), filters, order_by: None, limit: 2, offset: 0, timeout_secs: None };
-        let r = browse(&c, &req(vec![])).unwrap();
+        let browse = |req: BrowseRequest| {
+            let started = std::time::Instant::now();
+            let tables = vec![(req.schema.clone(), req.table.clone())];
+            run_sqlite(&c, tables, |d, cat| Ok(vec![plan_page(d, cat, &req)?]), |d, cat, ran| finish_page(d, cat, &req, ran, started))
+        };
+        let req = |filters: Vec<BrowseFilter>| BrowseRequest { schema: "public".into(), table: "users".into(), filters, limit: 2, ..Default::default() };
+        let r = browse(req(vec![])).unwrap();
         assert_eq!(r.columns.len(), 4);
         assert_eq!(r.rows.len(), 2);
         assert!(r.has_more);
         assert_eq!(r.ordered_by, vec!["id"]);
-        let r = browse(&c, &req(vec![BrowseFilter { column: "name".into(), value: None }])).unwrap();
+        assert!(r.stable_order);
+        let r = browse(req(vec![BrowseFilter { column: "name".into(), value: None }])).unwrap();
         assert_eq!(r.rows[0][1].as_deref(), Some("b@x"));
-        let r = browse(&c, &req(vec![BrowseFilter { column: "id".into(), value: Some("3".into()) }])).unwrap();
+        let r = browse(req(vec![BrowseFilter { column: "id".into(), value: Some("3".into()) }])).unwrap();
         assert_eq!(r.rows[0][2].as_deref(), Some("Cid"));
-        assert!(browse(&c, &req(vec![BrowseFilter { column: "nope".into(), value: None }])).is_err());
+        assert!(browse(req(vec![BrowseFilter { column: "nope".into(), value: None }])).is_err());
+        // Sorted by name (NULLs last), then the key: two pages share no row.
+        let page = |offset| {
+            let mut r = req(vec![]);
+            r.sort = vec![SortKey { column: "name".into(), desc: false }];
+            r.offset = offset;
+            browse(r).unwrap().rows.into_iter().map(|row| row[0].clone().unwrap()).collect::<Vec<_>>()
+        };
+        let (first, second) = (page(0), page(2));
+        assert!(first.iter().all(|id| !second.contains(id)), "{first:?} {second:?}");
     }
 
     #[test]
