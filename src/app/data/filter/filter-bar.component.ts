@@ -2,12 +2,14 @@ import { ChangeDetectionStrategy, Component, computed, input, output, signal } f
 
 import type { BrowseColumn, Engine, FilterIssue } from "../../core/tauri-api.service";
 import { kindOf } from "../../filter/kinds";
-import { type CondNode, type FilterNode, type GroupNode, newId, type Op, SEARCH_COLUMN } from "../../filter/model";
+import { type CondNode, type FilterNode, type GroupNode, newId, type Op, SEARCH_COLUMN, type SortKey } from "../../filter/model";
 import { opsFor } from "../../filter/operators";
 import { condLabel, nodeText } from "../../filter/printer";
 import { addNode, hasActive, removeNode, replaceNode, toggleOff } from "../../filter/tree";
 import { ConditionRowComponent } from "./condition-row.component";
-import type { FkSource, ValueSource } from "../../filter/pickers";
+import { printExpression } from "../../filter/expression";
+import type { SavedFilter } from "../../filter/memory";
+import type { FkSource, SavedSource, ValueSource } from "../../filter/pickers";
 
 interface Editing {
   /** The node being edited (a copy: applied on Apply). */
@@ -61,6 +63,30 @@ interface Editing {
     }
     <button type="button" class="text" [class.on]="textOpen()" [attr.aria-pressed]="textOpen()" (click)="textToggle.emit()"
       title="Edit the whole filter as text, e.g. role = admin and (created_at: last 7 days or email ~ gmail)">Text</button>
+    @if (saved()) {
+      <span class="saved-wrap">
+        <button type="button" class="text" [class.on]="!!savedMenu()" [attr.aria-expanded]="!!savedMenu()" (click)="toggleSaved()"
+          title="Named filters of this table: save the current filter and sort, or apply one">★ Saved</button>
+        @if (savedMenu(); as list) {
+          <div class="scrim" (click)="savedMenu.set(null)"></div>
+          <div class="saved-menu" role="menu" aria-label="Saved filters">
+            @for (s of list; track s.name) {
+              <div class="saved-item" [class.on]="isCurrent(s)">
+                <button type="button" role="menuitem" class="use" (click)="applySaved(s)" [title]="savedText(s)">{{ s.name }}</button>
+                <button type="button" class="x" (click)="removeSaved(s.name)" [attr.aria-label]="'Delete ' + s.name" title="Delete">×</button>
+              </div>
+            } @empty {
+              <div class="none">No saved filters for this table yet.</div>
+            }
+            <form class="save-as" (submit)="$event.preventDefault(); saveAs(name.value); name.value = ''">
+              <input #name type="text" spellcheck="false" [placeholder]="canSave() ? 'Name for the current filter' : 'Filter or sort first'"
+                [disabled]="!canSave()" aria-label="Name for the current filter" />
+              <button type="submit" [disabled]="!canSave()">Save</button>
+            </form>
+          </div>
+        }
+      </span>
+    }
     <input type="search" class="search" [class.on]="!!searchText()" placeholder="Search all columns" spellcheck="false" [value]="searchText()"
       [title]="searchTitle" aria-label="Search all columns (Enter applies)" (keydown.enter)="search($any($event.target).value)"
       (search)="$any($event.target).value || search('')" />
@@ -129,6 +155,21 @@ interface Editing {
     .text { font: 600 11px var(--mono); border: 1px solid var(--border); background: none; color: var(--text-muted); border-radius: 14px;
       padding: 2px 8px; cursor: pointer; }
     .text.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+    .saved-wrap { position: relative; }
+    .saved-menu { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; min-width: 240px; max-width: 360px; padding: 6px;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-md); display: flex; flex-direction: column; gap: 2px; }
+    .saved-item { display: flex; align-items: center; border-radius: 5px; }
+    .saved-item:hover, .saved-item.on { background: var(--hover); }
+    .saved-item.on .use { font-weight: 600; }
+    .use { flex: 1; text-align: left; font: inherit; font-size: 12px; border: 0; background: none; color: var(--text); padding: 4px 6px; cursor: pointer;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .none { color: var(--text-muted); padding: 4px 6px; }
+    .save-as { display: flex; gap: 4px; margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--border); }
+    .save-as input { flex: 1; min-width: 0; font: inherit; font-size: 12px; border: 1px solid var(--border); border-radius: 5px; padding: 3px 6px;
+      background: var(--input-bg); color: var(--text); }
+    .save-as button { font: inherit; font-size: 12px; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 5px;
+      padding: 3px 10px; cursor: pointer; }
+    .save-as button:disabled { opacity: 0.5; cursor: default; }
     .search { margin-left: auto; width: 190px; font: inherit; font-size: 12px; border: 1px solid var(--border); border-radius: 14px;
       padding: 2px 9px; background: var(--input-bg); color: var(--text); }
     .search.on { border-color: var(--accent); }
@@ -158,6 +199,10 @@ export class FilterBarComponent {
   readonly values = input<ValueSource | null>(null);
   /** Rows of referenced tables, for foreign-key columns. */
   readonly fk = input<FkSource | null>(null);
+  /** Named filters of the table (none: no "Saved" menu). */
+  readonly saved = input<SavedSource | null>(null);
+  /** The current sort (saved with a named filter). */
+  readonly sort = input<SortKey[]>([]);
   readonly treeChange = output<GroupNode>();
   /** Whether the expression box is shown (the Text button). */
   readonly textOpen = input(false);
@@ -179,6 +224,41 @@ export class FilterBarComponent {
     const v = this.searchNode()?.args[0];
     return typeof v === "string" ? v : "";
   });
+
+  protected readonly savedMenu = signal<SavedFilter[] | null>(null);
+  protected readonly canSave = computed(() => hasActive(this.tree()) || this.sort().length > 0);
+  private readonly currentText = computed(() => printExpression(this.tree()) + JSON.stringify(this.sort()));
+
+  protected async toggleSaved(): Promise<void> {
+    if (this.savedMenu()) return this.savedMenu.set(null);
+    const source = this.saved();
+    if (source) this.savedMenu.set(await source.list());
+  }
+
+  protected async saveAs(name: string): Promise<void> {
+    const source = this.saved();
+    if (source && name.trim() && this.canSave()) this.savedMenu.set(await source.save(name));
+  }
+
+  protected async removeSaved(name: string): Promise<void> {
+    const source = this.saved();
+    if (source) this.savedMenu.set(await source.remove(name));
+  }
+
+  protected applySaved(s: SavedFilter): void {
+    this.savedMenu.set(null);
+    this.saved()?.apply(s);
+  }
+
+  protected isCurrent(s: SavedFilter): boolean {
+    return printExpression(s.where) + JSON.stringify(s.sort) === this.currentText();
+  }
+
+  protected savedText(s: SavedFilter): string {
+    const where = printExpression(s.where) || "no conditions";
+    const sort = s.sort.map((k) => `${k.column}${k.desc ? " ↓" : " ↑"}`).join(", ");
+    return sort ? `${where} · sorted by ${sort}` : where;
+  }
 
   protected search(text: string): void {
     const t = text.trim() ? text : "";
@@ -292,6 +372,7 @@ export class FilterBarComponent {
 
   protected cancel(): void {
     this.editing.set(null);
+    this.savedMenu.set(null);
   }
 
   protected apply(): void {

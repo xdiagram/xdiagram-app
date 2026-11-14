@@ -22,8 +22,8 @@ import { labelColumn } from "../filter/label-column";
 import type { FkRows, FkTarget } from "../filter/pickers";
 import { type FilterNode, type GroupNode, LIMITS, type SortKey, type WireNode } from "../filter/model";
 import { parseQuick } from "../filter/quick-syntax";
-import { rememberExpression, rememberTable } from "../filter/memory";
-import { addNode, emptyRoot, fromEquality, hasActive, removeNode, setColumnFilter, toggleOff, withoutNav } from "../filter/tree";
+import { type DbMemory, type SavedFilter, deleteNamed, rememberExpression, rememberTable, saveNamed } from "../filter/memory";
+import { addNode, emptyRoot, fromEquality, hasActive, reId, removeNode, setColumnFilter, toggleOff, withoutNav } from "../filter/tree";
 import { treeIssues } from "../filter/validate";
 import { toWire, wireKey } from "../filter/wire";
 import { FilterMemoryService } from "../persistence/filter-memory.service";
@@ -291,6 +291,44 @@ export class BrowserStore {
     const target = this.fkTarget(column);
     const dbKey = this.workspace.databaseKey();
     if (target && dbKey) void this.memory.update(dbKey, (m) => rememberTable(m, target.tableId, { labelColumn: label }));
+  }
+
+  /** The named filters of the current table. */
+  async savedFilters(): Promise<SavedFilter[]> {
+    const loc = this.current();
+    const dbKey = this.workspace.databaseKey();
+    if (!loc || !dbKey) return [];
+    return (await this.memory.table(dbKey, loc.tableId))?.saved ?? [];
+  }
+
+  /** Saves the current filter and sort under `name` (navigation conditions left out). */
+  saveFilter(name: string): Promise<SavedFilter[]> {
+    const loc = this.current();
+    if (!loc) return Promise.resolve([]);
+    return this.changeSaved(loc.tableId, (m) => saveNamed(m, loc.tableId, { name, where: withoutNav(loc.where), sort: loc.sort }));
+  }
+
+  deleteSavedFilter(name: string): Promise<SavedFilter[]> {
+    const loc = this.current();
+    if (!loc) return Promise.resolve([]);
+    return this.changeSaved(loc.tableId, (m) => deleteNamed(m, loc.tableId, name));
+  }
+
+  private async changeSaved(tableId: string, change: (m: DbMemory) => DbMemory): Promise<SavedFilter[]> {
+    const dbKey = this.workspace.databaseKey();
+    if (!dbKey) return [];
+    let saved: SavedFilter[] = [];
+    await this.memory.update(dbKey, (m) => {
+      const next = change(m);
+      saved = next.tables[tableId]?.saved ?? [];
+      return next;
+    });
+    return saved;
+  }
+
+  /** Puts a named filter's conditions and sort in place of the current ones. */
+  applySavedFilter(filter: SavedFilter): void {
+    this.replace({ where: reId(filter.where), sort: filter.sort.slice(0, LIMITS.sortKeys), offset: 0 });
   }
 
   /** Keeps the current table's filter and sort for next time (not the FK-navigation conditions). */

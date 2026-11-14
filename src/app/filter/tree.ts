@@ -75,6 +75,11 @@ export function singleColumn(n: FilterNode): string | null {
   return cols.size === 1 && !cols.has(null) ? [...cols][0] : null;
 }
 
+/** The same tree with new ids (a saved filter applied again is a new set of chips). */
+export function reId<T extends FilterNode>(n: T): T {
+  return n.t === "group" ? { ...n, id: newId(), items: n.items.map(reId) } : { ...n, id: newId() };
+}
+
 export function countNodes(n: FilterNode): number {
   return n.t === "group" ? 1 + n.items.reduce((s, i) => s + countNodes(i), 0) : 1;
 }

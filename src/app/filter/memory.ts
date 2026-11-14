@@ -79,6 +79,23 @@ export function rememberTable(mem: DbMemory, tableId: string, patch: Partial<Omi
   return { ...mem, tables };
 }
 
+export const MAX_SAVED = 50;
+
+/** Saves a named filter of a table; the same name (any case) is replaced. Sorted by name. */
+export function saveNamed(mem: DbMemory, tableId: string, filter: SavedFilter, now = new Date()): DbMemory {
+  const name = filter.name.trim();
+  if (!name) return mem;
+  const others = (mem.tables[tableId]?.saved ?? []).filter((s) => s.name.toLowerCase() !== name.toLowerCase());
+  const saved = [...others, { ...filter, name }].sort((a, b) => a.name.localeCompare(b.name)).slice(0, MAX_SAVED);
+  return rememberTable(mem, tableId, { saved }, now);
+}
+
+/** Deletes a named filter of a table. */
+export function deleteNamed(mem: DbMemory, tableId: string, name: string, now = new Date()): DbMemory {
+  const saved = (mem.tables[tableId]?.saved ?? []).filter((s) => s.name !== name);
+  return rememberTable(mem, tableId, { saved }, now);
+}
+
 /** Adds an expression to the history (newest first, no repeats). */
 export function rememberExpression(mem: DbMemory, text: string): DbMemory {
   const t = text.trim();

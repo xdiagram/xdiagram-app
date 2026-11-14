@@ -1,4 +1,14 @@
 import type { ValuesResult } from "../core/tauri-api.service";
+import type { SavedFilter } from "./memory";
+
+/** The named filters of the table shown (the filter bar's "Saved" menu). */
+export interface SavedSource {
+  list(): Promise<SavedFilter[]>;
+  /** Saves the current filter and sort under `name`; returns the new list. */
+  save(name: string): Promise<SavedFilter[]>;
+  remove(name: string): Promise<SavedFilter[]>;
+  apply(filter: SavedFilter): void;
+}
 
 /** Where the value picker gets a column's values: (column, text to find, condition to leave out). */
 export type ValueSource = (column: string, search: string, exclude: string | null) => Promise<ValuesResult>;
