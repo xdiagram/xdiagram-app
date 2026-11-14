@@ -293,6 +293,15 @@ export class BrowserStore {
     if (target && dbKey) void this.memory.update(dbKey, (m) => rememberTable(m, target.tableId, { labelColumn: label }));
   }
 
+  /** The rows shown (filter and sort, all pages) as SQL with the values written in. */
+  async sqlText(): Promise<string> {
+    const loc = this.current();
+    const conn = await this.workspace.currentConnection();
+    if (!loc || !conn) throw new Error("Not connected");
+    const { schema, table } = splitTableId(loc.tableId);
+    return this.api.filterSql(conn.input, { schema, table, filters: [], filter: this.wire(loc), sort: loc.sort, limit: PAGE_SIZE, offset: 0 });
+  }
+
   /** The named filters of the current table. */
   async savedFilters(): Promise<SavedFilter[]> {
     const loc = this.current();

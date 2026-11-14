@@ -88,6 +88,13 @@ pub async fn count_rows(input: ConnectionInput, request: db::browse::CountReques
     ops::cancellable(op_id, dispatch::count_rows(&input, request)).await
 }
 
+/// The rows a browse request shows, as SQL with the values written in ("Copy as SQL"). Reads
+/// only the table's columns; nothing else runs.
+#[tauri::command]
+pub async fn filter_sql(input: ConnectionInput, request: BrowseRequest, op_id: Option<String>) -> Result<String, AppError> {
+    ops::cancellable(op_id, dispatch::filter_sql(&input, request)).await
+}
+
 /// A table's columns, kinds and primary key (no rows are read).
 #[tauri::command]
 pub async fn describe_table(input: ConnectionInput, schema: String, table: String, op_id: Option<String>) -> Result<db::catalog::TableInfo, AppError> {

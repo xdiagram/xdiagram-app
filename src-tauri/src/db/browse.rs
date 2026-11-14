@@ -243,6 +243,36 @@ pub fn plan_page(d: Dialect, cat: &Catalog, req: &BrowseRequest) -> Result<Stmt,
     Ok(Stmt { sql, params: r.params, timeout_s: req.timeout(), optional: false })
 }
 
+/// The rows shown, as SQL to read or run elsewhere ("Copy as SQL"): the filter with its values
+/// written in as escaped literals, the requested sort (not the tie-breaker), all columns (or
+/// the projection), no paging.
+pub fn plan_sql_text(d: Dialect, cat: &Catalog, req: &BrowseRequest) -> Result<String, AppError> {
+    let meta = meta_of(cat, req)?;
+    let mut r = Render::new(d);
+    let filter = combine(req.filter.as_ref(), &req.filters);
+    let cond = where_clause(&mut r, &Scope { meta, alias: ALIAS.into() }, filter.as_ref())?;
+    let (_, applied, _) = page_order(d, meta, req)?;
+    let alias = d.quote(ALIAS);
+    let columns = if req.columns.is_empty() {
+        "*".to_string()
+    } else {
+        projected(meta, req)?.iter().map(|c| format!("{alias}.{}", d.quote(&c.name))).collect::<Vec<_>>().join(", ")
+    };
+    let mut sql = format!("SELECT {columns}\nFROM {} AS {alias}", meta.qualified);
+    if let Some(c) = cond {
+        sql.push_str(&format!("\nWHERE {c}"));
+    }
+    let order: Vec<String> = applied
+        .iter()
+        .filter(|a| !a.tie)
+        .map(|a| d.order_item(&format!("{alias}.{}", d.quote(&a.column)), a.desc, meta.column(&a.column).is_none_or(|c| c.nullable)))
+        .collect();
+    if !order.is_empty() {
+        sql.push_str(&format!("\nORDER BY {}", order.join(", ")));
+    }
+    Ok(d.inline_params(&sql, &r.params))
+}
+
 /// How many rows match a filter, counted up to `cap` (so a huge table answers quickly).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -465,6 +495,52 @@ mod tests {
         let lite = catalog(Dialect::Sqlite, &[("id", "integer", false), ("org_id", "integer", true), ("role", "text", true)], &[], Some("rowid"));
         req.sort = vec![SortKey { column: "org_id".into(), desc: false }];
         assert!(plan_page(Dialect::Sqlite, &lite, &req).unwrap().sql.ends_with("ORDER BY \"t0\".\"org_id\" ASC NULLS LAST, \"t0\".rowid LIMIT 101 OFFSET 200"));
+    }
+
+    #[test]
+    fn sql_text_has_the_values_written_in() {
+        let pg = catalog(Dialect::Postgres, &[("id", "integer", false), ("org_id", "integer", true), ("role", "text", true)], &["id"], None);
+        let mut req = request();
+        req.filter = Some(FilterNode::Group {
+            id: "g".into(),
+            op: crate::db::filter::BoolOp::And,
+            not: false,
+            items: vec![
+                FilterNode::Cond { id: "a".into(), column: "role".into(), op: Op::Contains, args: vec!["o'k%".into()], cs: false },
+                FilterNode::Cond { id: "b".into(), column: "org_id".into(), op: Op::In, args: vec!["1".into(), "2".into()], cs: false },
+            ],
+        });
+        req.sort = vec![SortKey { column: "role".into(), desc: true }];
+        assert_eq!(
+            plan_sql_text(Dialect::Postgres, &pg, &req).unwrap(),
+            "SELECT *\nFROM \"public\".\"users\" AS \"t0\"\nWHERE (\"t0\".\"role\" ILIKE '%o''k!%%' ESCAPE '!' AND \"t0\".\"org_id\" IN (('1'::text)::integer, ('2'::text)::integer))\nORDER BY \"t0\".\"role\" DESC NULLS LAST"
+        );
+        req.columns = vec!["id".into()];
+        req.sort = vec![];
+        req.filter = None;
+        assert_eq!(plan_sql_text(Dialect::Postgres, &pg, &req).unwrap(), "SELECT \"t0\".\"id\"\nFROM \"public\".\"users\" AS \"t0\"");
+    }
+
+    /// The SQL text, run as it is, returns the rows the bound query returns.
+    #[test]
+    fn sql_text_runs_on_sqlite() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO t VALUES (1, 'O''Neil'), (2, 'a?b'), (3, '50%'), (4, NULL);").unwrap();
+        let mut cat = Catalog::new();
+        cat.insert(("main".into(), "t".into()), crate::db::catalog::sqlite_meta(&conn, "t").unwrap().unwrap());
+        let mut req = BrowseRequest { schema: "main".into(), table: "t".into(), limit: 100, ..Default::default() };
+        let ids = |sql: &str, params: &[String]| -> Vec<i64> {
+            let mut st = conn.prepare(sql).unwrap();
+            st.query_map(rusqlite::params_from_iter(params.iter()), |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+        };
+        for (op, arg) in [(Op::Contains, "'"), (Op::Eq, "a?b"), (Op::Contains, "%"), (Op::StartsWith, "o'")] {
+            req.filter = Some(FilterNode::Cond { id: "c".into(), column: "name".into(), op, args: vec![arg.into()], cs: false });
+            let text = plan_sql_text(Dialect::Sqlite, &cat, &req).unwrap();
+            let bound = plan_page(Dialect::Sqlite, &cat, &req).unwrap();
+            let bound_ids = ids(&bound.sql.replace("SELECT \"t0\".\"id\", \"t0\".\"name\"", "SELECT \"t0\".\"id\""), &bound.params);
+            assert_eq!(ids(&text.replace("SELECT *", "SELECT \"t0\".\"id\""), &[]), bound_ids, "{text}");
+            assert!(!bound_ids.is_empty(), "{arg}");
+        }
     }
 
     #[test]

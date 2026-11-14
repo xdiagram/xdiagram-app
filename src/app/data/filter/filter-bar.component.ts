@@ -63,6 +63,19 @@ interface Editing {
     }
     <button type="button" class="text" [class.on]="textOpen()" [attr.aria-pressed]="textOpen()" (click)="textToggle.emit()"
       title="Edit the whole filter as text, e.g. role = admin and (created_at: last 7 days or email ~ gmail)">Text</button>
+    @if (canCopy()) {
+      <span class="saved-wrap">
+        <button type="button" class="text" [class.on]="copyMenu()" [attr.aria-expanded]="copyMenu()" (click)="copyMenu.set(!copyMenu())"
+          title="Copy the filter as text or the rows shown as SQL">Copy</button>
+        @if (copyMenu()) {
+          <div class="scrim" (click)="copyMenu.set(false)"></div>
+          <div class="saved-menu" role="menu" aria-label="Copy">
+            <button type="button" role="menuitem" class="use" [disabled]="!hasActiveFilter()" (click)="copyAs('expression')">Filter as text (expression)</button>
+            <button type="button" role="menuitem" class="use" (click)="copyAs('sql')">Rows shown as SQL (values written in)</button>
+          </div>
+        }
+      </span>
+    }
     @if (saved()) {
       <span class="saved-wrap">
         <button type="button" class="text" [class.on]="!!savedMenu()" [attr.aria-expanded]="!!savedMenu()" (click)="toggleSaved()"
@@ -161,6 +174,9 @@ interface Editing {
     .saved-item { display: flex; align-items: center; border-radius: 5px; }
     .saved-item:hover, .saved-item.on { background: var(--hover); }
     .saved-item.on .use { font-weight: 600; }
+    .saved-menu > .use { border-radius: 5px; }
+    .saved-menu > .use:hover:not(:disabled) { background: var(--hover); }
+    .use:disabled { color: var(--text-muted); cursor: default; }
     .use { flex: 1; text-align: left; font: inherit; font-size: 12px; border: 0; background: none; color: var(--text); padding: 4px 6px; cursor: pointer;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .none { color: var(--text-muted); padding: 4px 6px; }
@@ -203,6 +219,9 @@ export class FilterBarComponent {
   readonly saved = input<SavedSource | null>(null);
   /** The current sort (saved with a named filter). */
   readonly sort = input<SortKey[]>([]);
+  /** Shows the Copy menu (the parent copies). */
+  readonly canCopy = input(false);
+  readonly copy = output<"sql" | "expression">();
   readonly treeChange = output<GroupNode>();
   /** Whether the expression box is shown (the Text button). */
   readonly textOpen = input(false);
@@ -224,6 +243,14 @@ export class FilterBarComponent {
     const v = this.searchNode()?.args[0];
     return typeof v === "string" ? v : "";
   });
+
+  protected readonly copyMenu = signal(false);
+  protected readonly hasActiveFilter = computed(() => hasActive(this.tree()));
+
+  protected copyAs(what: "sql" | "expression"): void {
+    this.copyMenu.set(false);
+    this.copy.emit(what);
+  }
 
   protected readonly savedMenu = signal<SavedFilter[] | null>(null);
   protected readonly canSave = computed(() => hasActive(this.tree()) || this.sort().length > 0);
@@ -373,6 +400,7 @@ export class FilterBarComponent {
   protected cancel(): void {
     this.editing.set(null);
     this.savedMenu.set(null);
+    this.copyMenu.set(false);
   }
 
   protected apply(): void {

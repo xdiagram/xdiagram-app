@@ -288,6 +288,86 @@ impl Dialect {
         }
     }
 
+    /// `value` as a string literal of this engine (for SQL text shown to the user; queries the app
+    /// runs always bind values). MySQL strings treat backslash as an escape; SQL Server strings
+    /// are Unicode (`N'…'`), as the bound parameters are.
+    pub fn literal(self, value: &str) -> String {
+        let quoted = value.replace('\'', "''");
+        match self {
+            Dialect::Mysql => format!("'{}'", quoted.replace('\\', "\\\\")),
+            Dialect::Mssql => format!("N'{quoted}'"),
+            Dialect::Postgres | Dialect::Sqlite => format!("'{quoted}'"),
+        }
+    }
+
+    /// `sql` (as this app writes it) with each parameter placeholder replaced by its value as a
+    /// literal. Quoted identifiers and strings are copied untouched, so a column named `a?b` or
+    /// `$1` stays as it is.
+    pub fn inline_params(self, sql: &str, params: &[String]) -> String {
+        let chars: Vec<char> = sql.chars().collect();
+        let mut out = String::with_capacity(sql.len() + params.iter().map(|p| p.len() + 3).sum::<usize>());
+        let mut next = 0;
+        let digits = |from: usize| chars[from..].iter().take_while(|c| c.is_ascii_digit()).collect::<String>();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            let close = match (c, self) {
+                ('\'', _) => Some('\''),
+                ('"', Dialect::Postgres | Dialect::Sqlite) => Some('"'),
+                ('`', Dialect::Mysql) => Some('`'),
+                ('[', Dialect::Mssql) => Some(']'),
+                _ => None,
+            };
+            if let Some(close) = close {
+                out.push(c);
+                i += 1;
+                while i < chars.len() {
+                    let ch = chars[i];
+                    out.push(ch);
+                    i += 1;
+                    if close == '\'' && self == Dialect::Mysql && ch == '\\' && i < chars.len() {
+                        out.push(chars[i]);
+                        i += 1;
+                    } else if ch == close {
+                        // A doubled closing character is part of the name or string.
+                        if i < chars.len() && chars[i] == close {
+                            out.push(close);
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            let placeholder = match self {
+                Dialect::Postgres if c == '$' => Some((digits(i + 1), 1)),
+                Dialect::Sqlite if c == '?' => Some((digits(i + 1), 1)),
+                Dialect::Mssql if c == '@' && chars.get(i + 1) == Some(&'P') => Some((digits(i + 2), 2)),
+                Dialect::Mysql if c == '?' => {
+                    next += 1;
+                    Some((next.to_string(), 0))
+                }
+                _ => None,
+            };
+            match placeholder {
+                Some((n, prefix)) if !n.is_empty() => {
+                    let value = n.parse::<usize>().ok().and_then(|n| params.get(n.wrapping_sub(1)));
+                    match value {
+                        Some(v) => out.push_str(&self.literal(v)),
+                        None => out.push_str("NULL"),
+                    }
+                    i += prefix + if self == Dialect::Mysql { 1 } else { n.len() };
+                }
+                _ => {
+                    out.push(c);
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
     /// One ORDER BY item with NULLs last on every engine. NOT NULL columns get the plain form, so
     /// an ordinary index can serve the sort.
     pub fn order_item(self, expr: &str, desc: bool, nullable: bool) -> String {
@@ -769,6 +849,28 @@ mod tests {
         assert_eq!(classify(Sqlite, "datetime"), Timestamp);
         assert_eq!(classify(Sqlite, "varchar(20)"), Text);
         assert_eq!(classify(Sqlite, ""), Other);
+    }
+
+    #[test]
+    fn inlines_parameters_outside_quotes() {
+        let mut p: Vec<String> = vec!["it's".into(), "a\\b".into(), "42".into()];
+        assert_eq!(
+            Postgres.inline_params("SELECT \"$1 \"\"x\"\"\" FROM t WHERE a = $1 AND b = ($2::text)::text AND c = $3 AND d = 'x$1'", &p),
+            "SELECT \"$1 \"\"x\"\"\" FROM t WHERE a = 'it''s' AND b = ('a\\b'::text)::text AND c = '42' AND d = 'x$1'"
+        );
+        assert_eq!(
+            Mysql.inline_params("SELECT `a?b`, 'it\\'s?' FROM t WHERE x = ? AND y LIKE ? ESCAPE '!' AND z = CAST(? AS SIGNED)", &p),
+            "SELECT `a?b`, 'it\\'s?' FROM t WHERE x = 'it''s' AND y LIKE 'a\\\\b' ESCAPE '!' AND z = CAST('42' AS SIGNED)"
+        );
+        assert_eq!(
+            Mssql.inline_params("SELECT [a@P1]]x] FROM t WHERE x = @P1 AND y = CAST(@P2 AS VARCHAR(8000)) AND z = @P3", &p),
+            "SELECT [a@P1]]x] FROM t WHERE x = N'it''s' AND y = CAST(N'a\\b' AS VARCHAR(8000)) AND z = N'42'"
+        );
+        assert_eq!(Sqlite.inline_params("SELECT \"?1\" FROM t WHERE x = ?1 AND z = ?3", &p), "SELECT \"?1\" FROM t WHERE x = 'it''s' AND z = '42'");
+        // Two-digit placeholders are read whole.
+        p.extend((4..=12).map(|i| i.to_string()));
+        assert_eq!(Postgres.inline_params("a = $1 AND b = $12", &p), "a = 'it''s' AND b = '12'");
+        assert_eq!(Mssql.inline_params("a = @P10", &p), "a = N'10'");
     }
 
     #[test]

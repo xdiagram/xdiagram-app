@@ -479,6 +479,11 @@ export class TauriApi {
     return this.db("count_rows", { input, request, opId });
   }
 
+  /** The rows a browse request shows, as SQL with the values written in (nothing is run). */
+  filterSql(input: ConnectionInput, request: BrowseRequest, opId?: string): Promise<string> {
+    return this.db("filter_sql", { input, request, opId });
+  }
+
   /** A table's columns, kinds and primary key (no rows are read). */
   describeTable(input: ConnectionInput, schema: string, table: string, opId?: string): Promise<TableInfo> {
     return this.db("describe_table", { input, schema, table, opId });

@@ -1,6 +1,8 @@
 import { ChangeDetectionStrategy, Component, Injector, afterNextRender, computed, effect, inject, signal, untracked, viewChild } from "@angular/core";
 
+import { errorMessage } from "../core/tauri-api.service";
 import { displayTable, type VRef } from "../diagram/view-model";
+import { printExpression } from "../filter/expression";
 import { QUICK_HELP } from "../filter/help";
 import { highlightTerms, segments } from "../filter/highlight";
 import { isOrderedKind } from "../filter/kinds";
@@ -96,7 +98,7 @@ function readHeight(): number {
       @if (store.columns().length) {
         <app-filter-bar [columns]="store.columns()" [engine]="store.engine()" [tree]="cur.where" [issues]="store.issues()"
           (treeChange)="store.setWhere($event)" [textOpen]="textOpen()" (textToggle)="toggleText()" [values]="valueSource" [fk]="fkSource"
-          [saved]="savedSource" [sort]="cur.sort" />
+          [saved]="savedSource" [sort]="cur.sort" [canCopy]="true" (copy)="copyFilter($event)" />
         @if (textOpen()) {
           <app-expression-box [columns]="store.columns()" [engine]="store.engine()" [tree]="cur.where" [history]="store.expressionHistory()"
             [values]="knownValues" (treeChange)="store.setWhere($event)" (used)="store.rememberExpression($event)" />
@@ -419,6 +421,19 @@ export class DataDrawerComponent {
     rows: (column, search, label) => this.store.fkRows(column, search, label ?? null),
     setLabel: (column, label) => this.store.setFkLabel(column, label),
   };
+
+  /** Copy menu of the filter bar: the filter as an expression, or the rows shown as SQL. */
+  protected async copyFilter(what: "sql" | "expression"): Promise<void> {
+    const where = this.store.current()?.where;
+    if (!where) return;
+    try {
+      const text = what === "sql" ? await this.store.sqlText() : printExpression(where);
+      await navigator.clipboard?.writeText(text);
+      this.workspace.flash(what === "sql" ? "SQL copied" : "Filter copied as text");
+    } catch (err) {
+      this.workspace.flash(`Could not copy: ${errorMessage(err)}`);
+    }
+  }
 
   protected toggleText(): void {
     const open = !this.textOpen();

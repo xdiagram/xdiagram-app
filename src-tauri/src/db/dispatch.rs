@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use super::browse::{
-    finish_count, finish_page, pg_fetch_text, pg_row_estimate, pg_table_columns, plan_count, plan_page, BrowseColumn, BrowseRequest, BrowseResult, CountRequest,
+    finish_count, finish_page, pg_fetch_text, pg_row_estimate, pg_table_columns, plan_count, plan_page, plan_sql_text, BrowseColumn, BrowseRequest, BrowseResult, CountRequest,
     CountResult,
 };
 use super::catalog::TableInfo;
@@ -182,6 +182,12 @@ pub async fn count_rows(input: &ConnectionInput, request: CountRequest) -> Resul
     let tables = vec![(request.request.schema.clone(), request.request.table.clone())];
     let req = request.clone();
     run(input, tables, move |d, cat| Ok(vec![plan_count(d, cat, &req)?]), move |_, _, ran| finish_count(&request, ran, started)).await
+}
+
+/// The rows a browse request shows, as SQL text with the values written in (nothing is run).
+pub async fn filter_sql(input: &ConnectionInput, request: BrowseRequest) -> Result<String, AppError> {
+    let tables = vec![(request.schema.clone(), request.table.clone())];
+    run(input, tables, |_, _| Ok(Vec::new()), move |d, cat, _| plan_sql_text(d, cat, &request)).await
 }
 
 /// A table's columns (with kinds), primary key and size estimate; no rows are read.
