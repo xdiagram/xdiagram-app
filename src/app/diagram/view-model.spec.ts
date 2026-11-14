@@ -34,6 +34,14 @@ describe("relatedTables", () => {
     expect(relatedTables(refs, "public.users").has("public.order_items")).toBe(false);
   });
 
+  it("joins the neighbours of several tables", () => {
+    expect(relatedTables(refs, ["public.orders", "public.countries"])).toEqual(
+      new Set(["public.orders", "public.countries", "public.users", "public.order_items"]),
+    );
+    expect(relatedTables(refs, new Set(["public.audit"]))).toEqual(new Set(["public.audit"]));
+    expect(relatedTables(refs, [])).toEqual(new Set());
+  });
+
   it("returns only the table itself when it has no links", () => {
     expect(relatedTables(refs, "public.audit")).toEqual(new Set(["public.audit"]));
     expect(relatedTables([], "public.users")).toEqual(new Set(["public.users"]));

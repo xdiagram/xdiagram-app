@@ -86,12 +86,13 @@ export function refKey(from: VEndpoint, to: VEndpoint): string {
   return `${a}|${b}`;
 }
 
-/** `id` plus every table one relationship away from it, in either direction. */
-export function relatedTables(refs: readonly VRef[], id: string): Set<string> {
-  const near = new Set([id]);
+/** The given table(s) plus every table one relationship away from any of them, in either direction. */
+export function relatedTables(refs: readonly VRef[], ids: string | readonly string[] | ReadonlySet<string>): Set<string> {
+  const seeds: ReadonlySet<string> = typeof ids === "string" ? new Set([ids]) : new Set(ids);
+  const near = new Set(seeds);
   for (const r of refs) {
-    if (r.from.table === id) near.add(r.to.table);
-    if (r.to.table === id) near.add(r.from.table);
+    if (seeds.has(r.from.table)) near.add(r.to.table);
+    if (seeds.has(r.to.table)) near.add(r.from.table);
   }
   return near;
 }

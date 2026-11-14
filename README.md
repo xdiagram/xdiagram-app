@@ -34,6 +34,9 @@ every change made on the canvas is an edit to it.
   - Right-click a table for header colour, add column, hide, show only it and its directly related
     tables, browse or profile data, add to query, sample data, reveal in editor and copy name.
   - Right-click the background for a new table.
+  - Select several tables with Shift/Ctrl+click or by Shift+dragging a box on the background
+    (Ctrl+A selects all, Esc clears). Dragging one moves them all; right-click to hide them, show
+    only them, or show only them and their directly related tables.
   - Drag from a column's connector dot to another table's column to add a `Ref`.
 - **Big schemas**:
   - Ctrl+K / Ctrl+P palette: fuzzy search over tables, columns and commands.

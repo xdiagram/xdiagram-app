@@ -316,14 +316,29 @@ export class AppComponent {
     void this.store.saveView(name);
   }
 
+  /** A dialog or the palette is open: canvas shortcuts stay out of its way. */
+  private overlayOpen(): boolean {
+    return (
+      this.paletteOpen() ||
+      this.settingsOpen() ||
+      this.aboutOpen() ||
+      this.connectOpen() ||
+      !!this.store.importRequest() ||
+      !!this.store.sampleDataFor()
+    );
+  }
+
   protected onKey(e: KeyboardEvent): void {
     // The related-data map covers the app: its shortcuts (undo, focus mode, …) would act unseen.
     if (this.rowGraph.open()) return;
     const mod = e.ctrlKey || e.metaKey;
     if (!mod) {
       if (e.key === "Escape") {
+        const menuOpen = this.exportOpen() || this.viewsOpen();
         this.exportOpen.set(false);
         this.viewsOpen.set(false);
+        // Otherwise Escape clears the canvas selection (dialogs handle their own Escape).
+        if (!menuOpen && !this.overlayOpen() && !isTextTarget(e.target)) this.store.diagram?.clearSelection();
       } else if (e.key.toLowerCase() === "f" && !e.altKey && !isTextTarget(e.target) && !this.paletteOpen()) {
         this.store.focusMode.update((v) => !v);
       }
@@ -338,6 +353,12 @@ export class AppComponent {
     if (key === "k" || key === "p") {
       e.preventDefault();
       this.paletteOpen.set(true);
+      return;
+    }
+    // Ctrl+A on the canvas selects every table (in text fields it keeps selecting text).
+    if (key === "a" && !e.shiftKey && !e.altKey && !isTextTarget(e.target) && !this.overlayOpen()) {
+      e.preventDefault();
+      this.store.diagram?.selectAll();
       return;
     }
     // Undo/redo canvas edits through the editor's history when focus is not in a text field.

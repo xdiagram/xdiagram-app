@@ -40,9 +40,11 @@ import {
   DetailLevel,
   edgeStrokeWidth,
   markerSegments,
+  normalizeRect,
   routeAll,
   rowCenterY,
   sceneBounds,
+  tablesInRect,
   textWidth,
   TYPE_FONT,
 } from "./geometry";
@@ -385,7 +387,12 @@ export class DiagramComponent implements DiagramHandle {
   private hoverTable: string | null = null;
   private hoverEdge: string | null = null;
   private hoverField: { table: string; field: string } | null = null;
-  private selected: string | null = null;
+  /** Selected tables: click, Shift/Ctrl+click, Shift+drag a box on the background, Ctrl+A. */
+  private selection = new Set<string>();
+  /** While a selected table is dragged: where each selected table started (they move together). */
+  private groupDrag: { leader: string; start: Map<string, Point> } | null = null;
+  /** Shift+drag on the background: the selection box, in diagram coordinates. */
+  private band: { start: Point; rect: Konva.Rect; end: () => void } | null = null;
   private viewportTimer: ReturnType<typeof setTimeout> | null = null;
   private exporting = false;
 
@@ -488,12 +495,18 @@ export class DiagramComponent implements DiagramHandle {
       if (e.target === stage) stage.container().style.cursor = "";
     });
     stage.on("click tap", (e) => {
-      if (e.target === stage) {
-        this.selected = null;
+      // A click on the background clears the selection, except while drawing a selection box
+      // (Konva reports its release as a click) or with Shift held.
+      if (e.target === stage && !this.band && !(e.evt as MouseEvent).shiftKey) {
+        this.selection.clear();
         this.evidence.set(null);
         this.applyHighlight();
       }
     });
+    // Capture phase: runs before Konva's own pointerdown, so the stage never starts panning.
+    const onPointerDown = (e: PointerEvent) => this.maybeStartBand(e);
+    host.addEventListener("pointerdown", onPointerDown, { capture: true });
+    destroyRef.onDestroy(() => host.removeEventListener("pointerdown", onPointerDown, { capture: true }));
     stage.on("contextmenu", (e) => {
       e.evt.preventDefault();
       this.openMenu(e.target);
@@ -548,7 +561,7 @@ export class DiagramComponent implements DiagramHandle {
       this.drawnPalette = this.palette;
     }
     if (this.hoverTable && !this.scene.tables.has(this.hoverTable)) this.hoverTable = null;
-    if (this.selected && !this.scene.tables.has(this.selected)) this.selected = null;
+    for (const id of this.selection) if (!this.scene.tables.has(id)) this.selection.delete(id);
     this.hoverField = null;
     this.hoverEdge = null;
     this.tooltip.set(null);
@@ -809,18 +822,45 @@ export class DiagramComponent implements DiagramHandle {
       this.applyHighlight();
       this.setCursor("");
     });
-    node.on("dragstart", () => {
+    node.on("dragstart", (e) => {
       node.moveToTop();
-      this.selected = id;
+      // Dragging an unselected table selects it (adds it with a modifier); dragging a selected
+      // one moves the whole selection.
+      if (!this.selection.has(id)) {
+        if (!isAdditive(e.evt)) this.selection.clear();
+        this.selection.add(id);
+      }
+      const boxes = this.scene?.tables;
+      const start = new Map<string, Point>();
+      for (const t of this.selection) {
+        const b = boxes?.get(t);
+        if (b) start.set(t, { x: b.x, y: b.y });
+      }
+      this.groupDrag = start.size > 1 ? { leader: id, start } : null;
       this.tooltip.set(null);
       this.evidence.set(null);
     });
     node.on("dragmove", () => this.onTableDrag(id, node));
     node.on("dragend", () => {
-      this.store.moveTables({ [id]: { x: Math.round(node.x()), y: Math.round(node.y()) } });
+      const moved = this.groupDrag?.leader === id ? [...this.groupDrag.start.keys()] : [id];
+      this.groupDrag = null;
+      const moves: Record<string, Point> = {};
+      for (const t of moved) {
+        const b = this.scene?.tables.get(t);
+        if (b) moves[t] = { x: Math.round(b.x), y: Math.round(b.y) };
+      }
+      moves[id] = { x: Math.round(node.x()), y: Math.round(node.y()) };
+      // One call, so moving a whole selection is one undo step.
+      this.store.moveTables(moves);
     });
-    node.on("click tap", () => {
-      this.selected = id;
+    node.on("click tap", (e) => {
+      if (isAdditive(e.evt)) {
+        if (this.selection.has(id)) this.selection.delete(id);
+        else this.selection.add(id);
+        this.applyHighlight();
+        return;
+      }
+      this.selection = new Set([id]);
       this.applyHighlight();
       this.store.reveal(current().table.line);
     });
@@ -1012,6 +1052,12 @@ export class DiagramComponent implements DiagramHandle {
     const table = tableId ? this.scene?.tables.get(tableId)?.table : undefined;
     this.tooltip.set(null);
     this.evidence.set(null);
+    // Right-clicking outside the selection makes that table the selection (like file managers);
+    // inside it, the menu acts on every selected table.
+    if (table && !this.selection.has(table.id)) {
+      this.selection = new Set([table.id]);
+      this.applyHighlight();
+    }
     this.menu.set({
       x: pointer.x + 2,
       y: pointer.y + 2,
@@ -1021,6 +1067,7 @@ export class DiagramComponent implements DiagramHandle {
       headerColor: table?.headerColor ?? null,
       world,
       canBrowse: !!table && this.browser.canBrowse(),
+      count: table ? this.selection.size : 0,
     });
   }
 
@@ -1028,6 +1075,9 @@ export class DiagramComponent implements DiagramHandle {
     const m = this.menu();
     if (!m) return;
     const box = m.tableId ? this.scene?.tables.get(m.tableId) : undefined;
+    // The tables the menu acts on: the selection when several are selected, else the clicked one.
+    const ids = m.count > 1 ? [...this.selection].filter((id) => this.scene?.tables.has(id)) : box ? [box.table.id] : [];
+    const labels = ids.map((id) => this.scene?.tables.get(id)?.table.label ?? displayTable(id));
     switch (action.kind) {
       case "renameTable":
         if (box) this.startRenameTable(box);
@@ -1053,24 +1103,37 @@ export class DiagramComponent implements DiagramHandle {
         if (box) this.browser.showProfile(box.table.id);
         break;
       case "query":
-        if (box) this.query.add(box.table.id);
+        for (const id of ids) this.query.add(id);
         break;
       case "hide":
-        if (box) this.store.toggleHidden(box.table.id);
+        if (ids.length > 1) {
+          this.store.setHidden(ids, true);
+          this.store.flash(`Hid ${ids.length} tables`);
+        } else if (box) {
+          this.store.toggleHidden(box.table.id);
+        }
+        break;
+      case "showOnly":
+        if (ids.length) {
+          this.fitWhenRendered = true;
+          this.store.showOnly(new Set(ids), "Show selected tables");
+          this.store.flash(`Showing ${ids.length} selected table${ids.length === 1 ? "" : "s"}`);
+        }
         break;
       case "isolate":
-        if (box) {
+        if (ids.length) {
           // Declared refs include links to hidden tables, so hidden neighbours come back;
           // discovered (X-ray) refs are the same extra lines the canvas draws.
-          const keep = relatedTables([...this.store.view().refs, ...this.workload.discovered()], box.table.id);
+          const keep = relatedTables([...this.store.view().refs, ...this.workload.discovered()], ids);
           this.fitWhenRendered = true;
           this.store.showOnly(keep, "Show related tables");
-          const n = keep.size - 1;
-          this.store.flash(`Showing ${box.table.label} and ${n} related table${n === 1 ? "" : "s"}`);
+          const n = keep.size - ids.length;
+          const what = ids.length === 1 ? labels[0] : `${ids.length} tables`;
+          this.store.flash(`Showing ${what} and ${n} related table${n === 1 ? "" : "s"}`);
         }
         break;
       case "copy":
-        if (box) void navigator.clipboard?.writeText(box.table.label);
+        if (labels.length) void navigator.clipboard?.writeText(labels.join("\n"));
         break;
       case "sample":
         if (box) this.store.sampleDataFor.set({ table: box.table.id });
@@ -1181,6 +1244,22 @@ export class DiagramComponent implements DiagramHandle {
     const scene = this.scene;
     const box = scene?.tables.get(id);
     if (!scene || !box) return;
+    const moved = [id];
+    const group = this.groupDrag;
+    if (group?.leader === id) {
+      // The other selected tables follow by the same offset.
+      const from = group.start.get(id)!;
+      const dx = node.x() - from.x;
+      const dy = node.y() - from.y;
+      for (const [other, start] of group.start) {
+        const b = other === id ? undefined : scene.tables.get(other);
+        if (!b) continue;
+        b.x = start.x + dx;
+        b.y = start.y + dy;
+        this.tableViews.get(other)?.node.position({ x: b.x, y: b.y });
+        moved.push(other);
+      }
+    }
     box.x = node.x();
     box.y = node.y();
     const routes = routeAll(
@@ -1197,9 +1276,13 @@ export class DiagramComponent implements DiagramHandle {
       this.edgeViews.set(routed.ref.id, fresh);
     });
     this.sceneVersion.update((v) => v + 1);
-    if (scene.groups.some((g) => g.group.tables.includes(id))) {
+    if (scene.groups.some((g) => moved.some((t) => g.group.tables.includes(t)))) {
       const view = this.store.view();
-      const live: Record<string, Point> = { ...this.store.positions(), [id]: { x: box.x, y: box.y } };
+      const live: Record<string, Point> = { ...this.store.positions() };
+      for (const t of moved) {
+        const b = scene.tables.get(t);
+        if (b) live[t] = { x: b.x, y: b.y };
+      }
       scene.groups = buildScene(view, live, this.store.hidden(), { detail: this.store.detail() }).groups;
       this.groupsLayer.destroyChildren();
       for (const g of scene.groups) this.groupsLayer.add(this.drawGroup(g));
@@ -1208,7 +1291,7 @@ export class DiagramComponent implements DiagramHandle {
     this.applyHighlight();
   }
 
-  /** Highlights edges touching the hovered field, else the hovered edge, else the hovered/selected table. */
+  /** Highlights edges touching the hovered field, else the hovered edge, else the hovered or selected tables. */
   private applyHighlight(): void {
     timed("highlight", () => this.highlightNow());
   }
@@ -1217,7 +1300,7 @@ export class DiagramComponent implements DiagramHandle {
     const scene = this.scene;
     if (!scene) return;
     const p = this.palette;
-    const focusTable = this.hoverTable ?? this.selected;
+    const selection = this.selection;
     const query = this.exporting ? null : this.query.highlight();
     for (const e of scene.edges) {
       const view = this.edgeViews.get(e.ref.id);
@@ -1230,8 +1313,10 @@ export class DiagramComponent implements DiagramHandle {
           (e.ref.to.table === table && e.ref.to.fields.includes(field));
       } else if (this.hoverEdge) {
         active = e.ref.id === this.hoverEdge;
-      } else if (this.hoverTable || (focusTable && !query)) {
-        active = e.ref.from.table === focusTable || e.ref.to.table === focusTable;
+      } else if (this.hoverTable) {
+        active = e.ref.from.table === this.hoverTable || e.ref.to.table === this.hoverTable;
+      } else if (selection.size && !query) {
+        active = selection.has(e.ref.from.table) || selection.has(e.ref.to.table);
       } else if (query) {
         active = query.refs.has(e.ref.id);
       }
@@ -1245,7 +1330,7 @@ export class DiagramComponent implements DiagramHandle {
       if (active) view.node.moveToTop();
     }
     for (const [id, view] of this.tableViews) {
-      const isSel = id === this.selected || !!query?.tables.has(id);
+      const isSel = selection.has(id) || !!query?.tables.has(id);
       view.body.stroke(isSel ? p.tableBorderSelected : p.tableBorder);
       view.body.strokeWidth(isSel ? 2 : 1);
     }
@@ -1255,13 +1340,13 @@ export class DiagramComponent implements DiagramHandle {
 
   /**
    * Idle tables (X-ray) are dimmed; in focus mode, tables more than one relationship away from
-   * the selected table fade out, and so do the edges between them.
+   * the selected tables fade out, and so do the edges that touch no selected table.
    */
   private applyTableOpacity(): void {
     const scene = this.scene;
     if (!scene) return;
     const p = this.palette;
-    const focus = this.store.focusMode() && !this.exporting ? this.selected : null;
+    const focus = this.store.focusMode() && !this.exporting && this.selection.size ? this.selection : null;
     const near = focus ? relatedTables(scene.edges.map((e) => e.ref), focus) : new Set<string>();
     const facts = this.workload.enabled() && !this.exporting ? this.workload.facts() : null;
     for (const [id, view] of this.tableViews) {
@@ -1269,7 +1354,7 @@ export class DiagramComponent implements DiagramHandle {
       view.node.opacity(idle * (focus && !near.has(id) ? 0.25 : 1));
     }
     for (const e of scene.edges) {
-      const dim = focus && !(e.ref.from.table === focus || e.ref.to.table === focus);
+      const dim = focus && !(focus.has(e.ref.from.table) || focus.has(e.ref.to.table));
       this.edgeViews.get(e.ref.id)?.node.opacity(dim ? 0.2 : 1);
     }
   }
@@ -1597,19 +1682,91 @@ export class DiagramComponent implements DiagramHandle {
       x: stage.width() / 2 - (box.x + box.w / 2) * scale,
       y: stage.height() / 2 - (box.y + box.h / 2) * scale,
     });
-    this.selected = id;
+    this.selection = new Set([id]);
     this.applyHighlight();
     this.onViewportChanged();
+  }
+
+  /** Ctrl+A: every table on the canvas (hidden tables are not on it). */
+  selectAll(): void {
+    if (!this.scene || this.scene.tables.size === 0) return;
+    this.selection = new Set(this.scene.tables.keys());
+    this.applyHighlight();
+    this.store.flash(`${this.selection.size} tables selected`);
+  }
+
+  /** Escape: false when there was nothing to clear or another canvas gesture owns Escape. */
+  clearSelection(): boolean {
+    if (!this.selection.size || this.menu() || this.inlineEdit() || this.columnForm() || this.linking || this.band) return false;
+    this.selection.clear();
+    this.applyHighlight();
+    return true;
+  }
+
+  /**
+   * Shift+drag on the empty background draws a selection box; the tables it touches join the
+   * selection. Called in the capture phase, before Konva would start panning the stage.
+   */
+  private maybeStartBand(e: PointerEvent): void {
+    const stage = this.stage;
+    if (!stage || this.band || this.linking || e.button !== 0 || !e.shiftKey) return;
+    stage.setPointersPositions(e);
+    const pointer = stage.getPointerPosition();
+    const start = stage.getRelativePointerPosition();
+    if (!pointer || !start || stage.getIntersection(pointer)) return; // on a table or edge
+    stage.draggable(false);
+    const accent = this.palette.edgeHighlight;
+    const rect = new Konva.Rect({
+      x: start.x, y: start.y, width: 0, height: 0, listening: false,
+      stroke: accent, strokeWidth: 1, strokeScaleEnabled: false, dash: [4, 3],
+      // A faint wash of the accent colour (#rrggbb + alpha).
+      fill: /^#[0-9a-f]{6}$/i.test(accent) ? `${accent}1f` : undefined,
+    });
+    this.layer.add(rect);
+    const update = (ev: PointerEvent): Rect => {
+      stage.setPointersPositions(ev);
+      const at = stage.getRelativePointerPosition() ?? start;
+      const r = normalizeRect(start, at);
+      rect.setAttrs({ x: r.x, y: r.y, width: r.w, height: r.h });
+      this.layer.batchDraw();
+      return r;
+    };
+    const onMove = (ev: PointerEvent) => update(ev);
+    const onUp = (ev: PointerEvent) => {
+      const r = update(ev);
+      end();
+      if (!this.scene || r.w < 2 || r.h < 2) return;
+      for (const id of tablesInRect(this.scene.tables, r)) this.selection.add(id);
+      this.applyHighlight();
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") end();
+    };
+    const end = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("keydown", onKey, true);
+      rect.destroy();
+      this.layer.batchDraw();
+      stage.draggable(true);
+      // Released after Konva reports the click, so the click still sees the band and keeps the selection.
+      setTimeout(() => (this.band = null), 0);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("keydown", onKey, true);
+    this.band = { start, rect, end };
   }
 
   exportPng(): string | null {
     const stage = this.stage;
     if (!stage || !this.scene || this.scene.tables.size === 0) return null;
     // Exports use the light palette, without hover/selection state or the live overlay.
-    const saved = { palette: this.palette, selected: this.selected, hoverTable: this.hoverTable, scale: stage.scaleX(), pos: stage.position() };
+    const saved = { palette: this.palette, selection: this.selection, hoverTable: this.hoverTable, scale: stage.scaleX(), pos: stage.position() };
     this.exporting = true;
     this.palette = LIGHT;
-    this.selected = this.hoverTable = null;
+    this.selection = new Set();
+    this.hoverTable = null;
     this.rerender();
 
     const b = sceneBounds(this.scene);
@@ -1631,7 +1788,7 @@ export class DiagramComponent implements DiagramHandle {
       stage.scale({ x: saved.scale, y: saved.scale });
       stage.position(saved.pos);
       this.palette = saved.palette;
-      this.selected = saved.selected;
+      this.selection = saved.selection;
       this.hoverTable = saved.hoverTable;
       this.exporting = false;
       this.rerender();
@@ -1710,6 +1867,12 @@ function pointsBounds(points: number[]): Rect {
   }
   const pad = 16;
   return { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 };
+}
+
+/** Shift, Ctrl or Cmd held: a click adds to (or removes from) the selection instead of replacing it. */
+function isAdditive(evt: Event | undefined): boolean {
+  const e = evt as Partial<MouseEvent> | undefined;
+  return !!(e?.shiftKey || e?.ctrlKey || e?.metaKey);
 }
 
 function readFlag(key: string, fallback: boolean): boolean {

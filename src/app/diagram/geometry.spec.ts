@@ -1,4 +1,4 @@
-import { HEADER_H, LANE_GAP, ROW_H, buildScene, refColumns, rowCenterY, visibleFields } from "./geometry";
+import { HEADER_H, LANE_GAP, ROW_H, buildScene, normalizeRect, refColumns, rowCenterY, tablesInRect, visibleFields } from "./geometry";
 import { EMPTY_VIEW, type VField, type VRef, type VTable, type ViewModel } from "./view-model";
 
 const field = (name: string, extra: Partial<VField> = {}): VField => ({
@@ -48,6 +48,19 @@ describe("geometry", () => {
   const view: ViewModel = { ...EMPTY_VIEW, tables: [users, a, b, c], refs };
   // Three child tables stacked in one column, all referencing the same parent to their right.
   const positions = { "public.a": { x: 0, y: 0 }, "public.b": { x: 0, y: 300 }, "public.c": { x: 0, y: 600 }, "public.users": { x: 600, y: 300 } };
+
+  it("finds the tables a selection box touches, dragged in any direction", () => {
+    const boxes = new Map([
+      ["a", { x: 0, y: 0, w: 100, h: 50 }],
+      ["b", { x: 200, y: 0, w: 100, h: 50 }],
+      ["c", { x: 0, y: 300, w: 100, h: 50 }],
+    ]);
+    expect(normalizeRect({ x: 250, y: 60 }, { x: 50, y: 10 })).toEqual({ x: 50, y: 10, w: 200, h: 50 });
+    // Partly covering a and b is enough; c is below the box.
+    expect(tablesInRect(boxes, normalizeRect({ x: 250, y: 60 }, { x: 50, y: 10 }))).toEqual(["a", "b"]);
+    expect(tablesInRect(boxes, { x: 110, y: 0, w: 80, h: 400 })).toEqual([]);
+    expect(tablesInRect(boxes, { x: -1000, y: -1000, w: 5000, h: 5000 })).toEqual(["a", "b", "c"]);
+  });
 
   it("keeps key and relationship columns at the 'keys' detail level", () => {
     const cols = refColumns(refs);

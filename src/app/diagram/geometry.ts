@@ -274,6 +274,20 @@ export function boundsOf(rects: Iterable<Rect>): Rect {
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
+/** The rectangle spanned by two corners, whatever direction it was dragged in. */
+export function normalizeRect(a: { x: number; y: number }, b: { x: number; y: number }): Rect {
+  return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) };
+}
+
+/** Ids of the tables a selection box touches (any overlap counts, like most diagram tools). */
+export function tablesInRect(tables: ReadonlyMap<string, Rect>, r: Rect): string[] {
+  const hits: string[] = [];
+  for (const [id, t] of tables) {
+    if (t.x < r.x + r.w && t.x + t.w > r.x && t.y < r.y + r.h && t.y + t.h > r.y) hits.push(id);
+  }
+  return hits;
+}
+
 export function sceneBounds(scene: Scene): Rect {
   const rects: Rect[] = [...scene.tables.values(), ...scene.groups];
   const b = boundsOf(rects);

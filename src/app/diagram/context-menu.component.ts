@@ -13,6 +13,8 @@ export interface CanvasMenuState {
   /** Pointer position in diagram coordinates (for "New table here"). */
   world: { x: number; y: number };
   canBrowse: boolean;
+  /** Selected tables the menu acts on (more than one: the selection menu). */
+  count: number;
 }
 
 export type CanvasMenuAction =
@@ -25,6 +27,7 @@ export type CanvasMenuAction =
   | { kind: "profile" }
   | { kind: "query" }
   | { kind: "hide" }
+  | { kind: "showOnly" }
   | { kind: "isolate" }
   | { kind: "copy" }
   | { kind: "sample" }
@@ -43,7 +46,16 @@ export type CanvasMenuAction =
     "(contextmenu)": "$event.preventDefault()",
   },
   template: `
-    @if (state().tableId) {
+    @if (state().tableId && state().count > 1) {
+      <div class="title">{{ state().count }} tables selected</div>
+      <button type="button" role="menuitem" (click)="pick({ kind: 'hide' })">Hide {{ state().count }} tables</button>
+      <button type="button" role="menuitem" (click)="pick({ kind: 'showOnly' })">Show only these</button>
+      <button type="button" role="menuitem" (click)="pick({ kind: 'isolate' })">Show only these &amp; related</button>
+      @if (state().canBrowse) {
+        <button type="button" role="menuitem" (click)="pick({ kind: 'query' })">Add to query</button>
+      }
+      <button type="button" role="menuitem" (click)="pick({ kind: 'copy' })">Copy names</button>
+    } @else if (state().tableId) {
       <div class="title">{{ state().tableLabel }}</div>
       <button type="button" role="menuitem" (click)="pick({ kind: 'renameTable' })">Rename table…<kbd>dbl-click header</kbd></button>
       @if (state().field) {

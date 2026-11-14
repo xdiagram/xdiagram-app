@@ -72,6 +72,10 @@ export interface DiagramHandle {
   /** PNG data URL of the whole diagram, or null when empty. */
   exportPng(): string | null;
   exportSvg(): string | null;
+  /** Ctrl+A: selects every table on the canvas. */
+  selectAll(): void;
+  /** Escape: clears the selection; false when there was nothing to clear. */
+  clearSelection(): boolean;
 }
 
 /** Implemented by the DBML editor; lets the canvas and shortcuts use its undo history. */
