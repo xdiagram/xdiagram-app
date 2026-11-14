@@ -98,10 +98,10 @@ function readHeight(): number {
       @if (store.columns().length) {
         <app-filter-bar [columns]="store.columns()" [engine]="store.engine()" [tree]="cur.where" [issues]="store.issues()"
           (treeChange)="store.setWhere($event)" [textOpen]="textOpen()" (textToggle)="toggleText()" [values]="valueSource" [fk]="fkSource"
-          [saved]="savedSource" [sort]="cur.sort" [canCopy]="true" (copy)="copyFilter($event)" />
+          [saved]="savedSource" [sort]="cur.sort" [canCopy]="true" (copy)="copyFilter($event)" [rels]="store.relOptions()" [relColumns]="relColumns" />
         @if (textOpen()) {
           <app-expression-box [columns]="store.columns()" [engine]="store.engine()" [tree]="cur.where" [history]="store.expressionHistory()"
-            [values]="knownValues" (treeChange)="store.setWhere($event)" (used)="store.rememberExpression($event)" />
+            [values]="knownValues" [rels]="store.relContext()" (treeChange)="store.setWhere($event)" (used)="store.rememberExpression($event)" />
         }
       }
     }
@@ -412,6 +412,7 @@ export class DataDrawerComponent {
   private readonly exprBox = viewChild(ExpressionBoxComponent);
   protected readonly knownValues = (column: string) => this.store.knownValues(column);
   protected readonly valueSource: ValueSource = (column, search, exclude) => this.store.valueCounts(column, search, exclude);
+  protected readonly relColumns = (tableId: string) => this.store.relColumns(tableId);
   protected readonly savedSource: SavedSource = {
     list: () => this.store.savedFilters(),
     save: (name) => this.store.saveFilter(name),

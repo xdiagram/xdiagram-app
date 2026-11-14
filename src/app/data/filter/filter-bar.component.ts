@@ -2,7 +2,9 @@ import { ChangeDetectionStrategy, Component, computed, input, output, signal } f
 
 import type { BrowseColumn, Engine, FilterIssue } from "../../core/tauri-api.service";
 import { kindOf } from "../../filter/kinds";
-import { type CondNode, type FilterNode, type GroupNode, newId, type Op, SEARCH_COLUMN, type SortKey } from "../../filter/model";
+import { type CondNode, type FilterNode, type GroupNode, newId, type Op, type RelNode, SEARCH_COLUMN, type SortKey } from "../../filter/model";
+import type { RelOption } from "../../filter/relations";
+import { RelEditorComponent } from "./rel-editor.component";
 import { opsFor } from "../../filter/operators";
 import { condLabel, nodeText } from "../../filter/printer";
 import { addNode, hasActive, removeNode, replaceNode, toggleOff } from "../../filter/tree";
@@ -30,7 +32,7 @@ interface Editing {
  */
 @Component({
   selector: "app-filter-bar",
-  imports: [ConditionRowComponent],
+  imports: [ConditionRowComponent, RelEditorComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { "(document:keydown.escape)": "cancel()" },
   template: `
@@ -61,6 +63,9 @@ interface Editing {
     }
     <button type="button" class="add" (click)="addCondition($event)" [disabled]="!columns().length">+ Filter</button>
     <button type="button" class="add" (click)="addGroup($event)" [disabled]="!columns().length" title="Conditions of which any one must match">+ Group</button>
+    @if (rels().length && relColumns()) {
+      <button type="button" class="add" (click)="addRel($event)" title="Rows by their related rows: has orders, has no orders, has at least 3 orders over 100…">+ Related</button>
+    }
     @if (tree().items.length) {
       <button type="button" class="clear" (click)="emit({ t: 'group', id: tree().id, op: 'and', items: [] })">Clear</button>
     }
@@ -120,6 +125,11 @@ interface Editing {
         @if (e.draft.t === "cond") {
           <app-condition-row [columns]="columns()" [engine]="engine()" [node]="e.draft" [issue]="issueOf(e.draft)" [values]="values()" [fk]="fk()"
             (changed)="setDraft($event)" (submit)="apply()" />
+        } @else if (e.draft.t === "rel") {
+          <app-rel-editor [options]="rels()" [node]="e.draft" [engine]="engine()" [columnsOf]="relColumns()!" (changed)="setDraft($event)" (submit)="apply()" />
+          @if (issueOf(e.draft); as msg) {
+            <div class="issue">{{ msg }}</div>
+          }
         } @else {
           <div class="group-head">
             Rows match
@@ -202,6 +212,7 @@ interface Editing {
     .editor { position: fixed; z-index: 20; min-width: 320px; max-width: min(640px, calc(100vw - 16px)); padding: 10px; background: var(--panel);
       border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-md); display: flex; flex-direction: column; gap: 8px; }
     .group-head { display: flex; align-items: center; gap: 5px; }
+    .issue { color: var(--danger); font-size: 11.5px; }
     .group-head select { font: inherit; font-size: 12px; border: 1px solid var(--border); border-radius: 5px; padding: 2px 4px;
       background: var(--input-bg); color: var(--text); }
     .item { display: flex; align-items: flex-start; gap: 4px; padding-left: 10px; border-left: 2px solid var(--border); }
@@ -222,6 +233,9 @@ export class FilterBarComponent {
   readonly values = input<ValueSource | null>(null);
   /** Rows of referenced tables, for foreign-key columns. */
   readonly fk = input<FkSource | null>(null);
+  /** The table's relationships ("+ Related"), and how to read a related table's columns. */
+  readonly rels = input<RelOption[]>([]);
+  readonly relColumns = input<((tableId: string) => Promise<BrowseColumn[]>) | null>(null);
   /** Named filters of the table (none: no "Saved" menu). */
   readonly saved = input<SavedSource | null>(null);
   /** The current sort (saved with a named filter). */
@@ -384,7 +398,12 @@ export class FilterBarComponent {
     this.open({ t: "group", id: newId(), op: "or", items: [this.newCondition(), this.newCondition()] }, true, event);
   }
 
-  protected setDraft(node: CondNode): void {
+  protected addRel(event: Event): void {
+    const o = this.rels()[0];
+    if (o) this.open({ t: "rel", id: newId(), label: o.label, schema: o.schema, table: o.table, on: o.on, quant: "some" }, true, event);
+  }
+
+  protected setDraft(node: CondNode | RelNode): void {
     this.editing.update((e) => (e ? { ...e, draft: node } : e));
   }
 
@@ -423,6 +442,7 @@ export class FilterBarComponent {
     }
     // Edited conditions apply again (and stop being "from navigation").
     if (draft.t === "cond") draft = { ...draft, off: false, origin: undefined };
+    else if (draft.t === "rel") draft = { ...draft, off: false };
     const tree = e.isNew ? addNode(this.tree(), draft) : replaceNode(this.tree(), e.draft.id, draft);
     if (hasActive(draft) || !e.isNew) this.emit(tree);
   }

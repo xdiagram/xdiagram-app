@@ -1,6 +1,7 @@
 import { type Arg, type CondNode, type FilterNode, SEARCH_COLUMN } from "./model";
 import { opInfo } from "./operators";
 import { pointLabel, spanLabel } from "./relative-dates";
+import { quantText } from "./relations";
 
 const argText = (a: Arg) => (typeof a === "string" ? a : pointLabel(a));
 
@@ -22,6 +23,10 @@ export function nodeText(n: FilterNode): string {
   if (n.t === "cond") {
     const { column, op, value } = condLabel(n);
     return [column, op, value].filter((s) => s).join(" ");
+  }
+  if (n.t === "rel") {
+    const inner = n.filter && n.filter.items.some((i) => !i.off) ? ` where ${nodeText(n.filter)}` : "";
+    return `${quantText(n.quant, n.label)}${inner}`;
   }
   const inner = n.items.map((i) => (i.t === "group" && i.items.length > 1 ? `(${nodeText(i)})` : nodeText(i))).join(` ${n.op} `);
   return n.not ? `not (${inner})` : inner;

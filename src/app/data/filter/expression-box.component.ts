@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, ElementRef, computed, effect, input, output, signal, untracked, viewChild } from "@angular/core";
 
 import type { BrowseColumn, Engine } from "../../core/tauri-api.service";
-import { type CompletionContext, ParseError, type Suggestion, complete, parseExpression, printExpression } from "../../filter/expression";
+import { type CompletionContext, ParseError, type RelContext, type Suggestion, complete, parseExpression, printExpression } from "../../filter/expression";
 import { kindOf } from "../../filter/kinds";
 import type { GroupNode } from "../../filter/model";
 
@@ -70,6 +70,8 @@ export class ExpressionBoxComponent {
   readonly history = input<string[]>([]);
   /** Known values of a column, for suggestions. */
   readonly values = input<(column: string) => string[]>(() => []);
+  /** The relationships `has …` / `no …` / `count(…)` can name (none: refused). */
+  readonly rels = input<RelContext | null>(null);
   readonly treeChange = output<GroupNode>();
   readonly used = output<string>();
 
@@ -84,10 +86,14 @@ export class ExpressionBoxComponent {
   /** The text was typed (not yet applied): a new tree from outside does not overwrite it. */
   private dirty = false;
 
-  private readonly ctx = computed<CompletionContext>(() => ({
-    columns: this.columns().map((c) => ({ name: c.name, kind: kindOf(c, this.engine()), enumValues: c.enumValues })),
-    values: this.values(),
-  }));
+  private readonly ctx = computed<CompletionContext>(() => {
+    const rels = this.rels();
+    return {
+      columns: this.columns().map((c) => ({ name: c.name, kind: kindOf(c, this.engine()), enumValues: c.enumValues })),
+      values: this.values(),
+      relations: rels ? rels.options(rels.table).map((o) => o.label) : [],
+    };
+  });
 
   constructor() {
     effect(() => {
@@ -110,7 +116,7 @@ export class ExpressionBoxComponent {
 
   private check(): void {
     try {
-      parseExpression(this.text());
+      parseExpression(this.text(), this.rels());
       this.error.set(null);
     } catch (e) {
       this.error.set(e instanceof ParseError ? e : null);
@@ -178,7 +184,7 @@ export class ExpressionBoxComponent {
     if (!this.dirty) return;
     let parsed: GroupNode;
     try {
-      parsed = parseExpression(this.text());
+      parsed = parseExpression(this.text(), this.rels());
     } catch (e) {
       if (e instanceof ParseError) {
         this.error.set(e);

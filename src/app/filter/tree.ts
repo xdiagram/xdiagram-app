@@ -56,6 +56,7 @@ export function toggleOff(root: GroupNode, id: string): GroupNode {
 
 /** The conditions directly under the root on `column` (what that column's filter box shows). */
 export function topConds(root: GroupNode, column: string): CondNode[] {
+  // (related-row conditions are not a column's)
   return root.items.filter((n): n is CondNode => n.t === "cond" && n.column === column);
 }
 
@@ -71,6 +72,7 @@ export function setColumnFilter(root: GroupNode, column: string, node: FilterNod
 /** The column a node is about, when it is a condition or a group of conditions on one column. */
 export function singleColumn(n: FilterNode): string | null {
   if (n.t === "cond") return n.column;
+  if (n.t === "rel") return null;
   const cols = new Set(n.items.map(singleColumn));
   return cols.size === 1 && !cols.has(null) ? [...cols][0] : null;
 }
@@ -81,6 +83,11 @@ export function singleColumn(n: FilterNode): string | null {
  */
 export function renameColumns(root: GroupNode, fn: (column: string) => string | null): GroupNode {
   const renamed = mapTree(root, (n) => {
+    // A related-row condition: this table's key columns are renamed (its filter is on the other table).
+    if (n.t === "rel") {
+      const on = n.on.map(([local, remote]) => [fn(local), remote] as const);
+      return on.some(([local]) => local === null) ? null : { ...n, on: on.map(([l, r]) => [l as string, r] as [string, string]) };
+    }
     if (n.t !== "cond" || n.column === SEARCH_COLUMN) return n;
     const column = fn(n.column);
     return column === null ? null : column === n.column ? n : { ...n, column };
@@ -90,21 +97,27 @@ export function renameColumns(root: GroupNode, fn: (column: string) => string | 
 
 /** The same tree with new ids (a saved filter applied again is a new set of chips). */
 export function reId<T extends FilterNode>(n: T): T {
-  return n.t === "group" ? { ...n, id: newId(), items: n.items.map(reId) } : { ...n, id: newId() };
+  if (n.t === "group") return { ...n, id: newId(), items: n.items.map(reId) };
+  if (n.t === "rel") return { ...n, id: newId(), ...(n.filter ? { filter: reId(n.filter) } : {}) };
+  return { ...n, id: newId() };
 }
 
 export function countNodes(n: FilterNode): number {
-  return n.t === "group" ? 1 + n.items.reduce((s, i) => s + countNodes(i), 0) : 1;
+  if (n.t === "group") return 1 + n.items.reduce((s, i) => s + countNodes(i), 0);
+  if (n.t === "rel") return 1 + (n.filter ? countNodes(n.filter) : 0);
+  return 1;
 }
 
 /** Whether any condition applies (switched-off ones and empty groups do not). */
 export function hasActive(n: FilterNode | null): boolean {
   if (!n || n.off) return false;
-  return n.t === "cond" || n.items.some(hasActive);
+  return n.t !== "group" || n.items.some(hasActive);
 }
 
+/** Columns of this table the tree names (not those inside related-row conditions). */
 export function columnsUsed(n: FilterNode, into = new Set<string>()): Set<string> {
   if (n.t === "cond") into.add(n.column);
+  else if (n.t === "rel") n.on.forEach(([local]) => into.add(local));
   else for (const i of n.items) columnsUsed(i, into);
   return into;
 }

@@ -19,7 +19,9 @@ import { splitTableId } from "../diagram/canvas-edit";
 import type { VRef } from "../diagram/view-model";
 import { toCsv, toJson } from "../export/rows-export";
 import { kindOf } from "../filter/kinds";
+import type { RelContext } from "../filter/expression";
 import { labelColumn } from "../filter/label-column";
+import { relOptions } from "../filter/relations";
 import type { FkRows, FkTarget } from "../filter/pickers";
 import { type FilterNode, type GroupNode, LIMITS, type SortKey, type WireNode } from "../filter/model";
 import { parseQuick } from "../filter/quick-syntax";
@@ -134,6 +136,7 @@ export class BrowserStore {
         this.counts.clear();
         this.valueCache.clear();
         this.described.clear();
+        this.describedColumns.clear();
         this.expressionHistory.set([]);
       });
     });
@@ -209,7 +212,7 @@ export class BrowserStore {
     const conn = await this.workspace.currentConnection();
     if (!loc || !conn) throw new Error("Not connected");
     const where = exclude ? removeNode(loc.where, exclude) : loc.where;
-    const filter = toWire(where, new Date(), (c) => this.kindIn(loc.tableId, c) ?? "timestamp");
+    const filter = this.wireOf(where, loc.tableId);
     const key = [loc.tableId, column, search, wireKey(filter)].join("\u0000");
     const cached = this.valueCache.get(key);
     if (cached) return cached;
@@ -532,18 +535,49 @@ export class BrowserStore {
     void this.load();
   }
 
-  /** The kind of a column of a table, from the latest result seen for that table. */
+  /** The kind of a column of a table, from the latest result (or description) seen for that table. */
   private kindIn(tableId: string, column: string): ColKind | null {
-    const col = this.tableColumns().get(tableId)?.find((c) => c.name === column);
+    const col = (this.tableColumns().get(tableId) ?? this.describedColumns.get(tableId))?.find((c) => c.name === column);
     return col ? kindOf(col, this.engine()) : null;
   }
 
   /** The current filter as Rust takes it. */
   wire(loc: BrowseLocation | null = this.current()): WireNode | null {
-    if (!loc) return null;
-    // Before the first load of a table its kinds are unknown: periods resolve as timestamps,
-    // which Rust also accepts for date columns (at midnight).
-    return toWire(loc.where, new Date(), (c) => this.kindIn(loc.tableId, c) ?? "timestamp");
+    return loc ? this.wireOf(loc.where, loc.tableId) : null;
+  }
+
+  /**
+   * A tree of `tableId` as Rust takes it. Before a table's first load its kinds are unknown:
+   * periods resolve as timestamps, which Rust also accepts for date columns (at midnight).
+   */
+  private wireOf(where: GroupNode, tableId: string): WireNode | null {
+    return toWire(where, new Date(), (c) => this.kindIn(tableId, c) ?? "timestamp", (t) => (c) => this.kindIn(t, c) ?? "timestamp");
+  }
+
+  /** Relationships of the current table (its "+ Related" conditions). */
+  readonly relOptions = computed(() => {
+    const id = this.current()?.tableId;
+    return id ? relOptions(id, this.refs()) : [];
+  });
+
+  /** What `has …` / `no …` / `count(…)` name in the text box (any table's relationships). */
+  readonly relContext = computed<RelContext | null>(() => {
+    const id = this.current()?.tableId;
+    const refs = this.refs();
+    return id ? { table: id, options: (t: string) => relOptions(t, refs) } : null;
+  });
+
+  private readonly describedColumns = new Map<string, BrowseColumn[]>();
+
+  /** A related table's columns: from a load this session, else described (once). */
+  async relColumns(tableId: string): Promise<BrowseColumn[]> {
+    const known = this.tableColumns().get(tableId) ?? this.describedColumns.get(tableId);
+    if (known) return known;
+    const conn = await this.workspace.currentConnection();
+    if (!conn) throw new Error("Not connected");
+    const columns = (await this.describe(conn.input, tableId)).columns;
+    this.describedColumns.set(tableId, columns);
+    return columns;
   }
 
   async load(): Promise<void> {

@@ -85,7 +85,23 @@ export interface GroupNode {
   items: FilterNode[];
 }
 
-export type FilterNode = GroupNode | CondNode;
+/** Rows by their related rows (Rust `FilterNode::Rel`). */
+export interface RelNode {
+  t: "rel";
+  id: string;
+  /** The relationship's name in chips and expressions (see `relations.ts`), e.g. `orders`. */
+  label: string;
+  schema: string;
+  table: string;
+  /** `[column of this table, column of the related table]` pairs. */
+  on: [string, string][];
+  quant: Quant;
+  /** Conditions on the related rows (their own columns). */
+  filter?: GroupNode;
+  off?: boolean;
+}
+
+export type FilterNode = GroupNode | CondNode | RelNode;
 
 export interface SortKey {
   column: string;

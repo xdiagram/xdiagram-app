@@ -65,6 +65,8 @@ export function checkValue(kind: ColKind, value: string): string | null {
 export function treeIssues(node: FilterNode, kindOfColumn: (column: string) => ColKind | null): FilterIssue[] {
   if (node.off) return [];
   if (node.t === "group") return node.items.flatMap((i) => treeIssues(i, kindOfColumn));
+  // The related table's values are checked by Rust, which knows its columns.
+  if (node.t === "rel") return [];
   const kind = kindOfColumn(node.column);
   if (!kind) return [];
   if (node.op === "in" || node.op === "notIn") {

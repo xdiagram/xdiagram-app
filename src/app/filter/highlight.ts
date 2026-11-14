@@ -39,6 +39,8 @@ export function highlightTerms(node: FilterNode | null): { all: string[]; byColu
       if (!n.not) n.items.forEach(walk);
       return;
     }
+    // Conditions on related rows are about another table's values.
+    if (n.t === "rel") return;
     const v = n.args[0];
     if (typeof v !== "string" || !v) return;
     if (n.column === SEARCH_COLUMN) all.push(v);

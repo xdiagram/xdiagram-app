@@ -1,6 +1,7 @@
 import type { ColKind } from "../core/tauri-api.service";
-import { type Arg, type CondNode, type FilterNode, type GroupNode, newId, type Op, SEARCH_COLUMN, type Span } from "./model";
+import { type Arg, type CondNode, type CountOp, type FilterNode, type GroupNode, newId, type Op, type RelNode, SEARCH_COLUMN, type Span } from "./model";
 import { parsePoint, printPoint } from "./relative-dates";
+import type { RelOption } from "./relations";
 
 /**
  * The filter as a line of text, for typing it in one go:
@@ -13,6 +14,7 @@ import { parsePoint, printPoint } from "./relative-dates";
  *   col is null   col is not null   col is empty   col is blank   col is padded
  *   col: today | yesterday | this week | this month | this year | last 7 days | 2026-11-14
  *   any ~ v                       (search in every text column)
+ *   has orders   no orders   count(orders) >= 3   has orders(total > 100)   (related rows)
  *   not …   ( … )   and   or
  *
  * Values: 'quoted' or "quoted" (\ escapes), or bare (numbers, dates, -7d for "7 days ago").
@@ -29,7 +31,9 @@ export class ParseError extends Error {
   }
 }
 
-const KEYWORDS = new Set(["and", "or", "not", "in", "between", "is", "null", "empty", "blank", "padded", "matches", "cs", "any"]);
+const KEYWORDS = new Set(["and", "or", "not", "in", "between", "is", "null", "empty", "blank", "padded", "matches", "cs", "any", "has", "no", "count"]);
+const COUNT_OPS: CountOp[] = ["eq", "ne", "lt", "le", "gt", "ge"];
+const COUNT_SYMBOL: Record<CountOp, string> = { eq: "=", ne: "!=", lt: "<", le: "<=", gt: ">", ge: ">=" };
 const OPS: [string, Op | "span"][] = [
   ["!=", "ne"],
   ["<>", "ne"],
@@ -48,7 +52,14 @@ const TEXT_OPS: Op[] = ["contains", "notContains", "startsWith", "endsWith", "re
 
 class Parser {
   pos = 0;
-  constructor(readonly src: string) {}
+  /** The table whose columns and relationships names refer to (changes inside `has x(…)`). */
+  table: string;
+  constructor(
+    readonly src: string,
+    readonly rel: RelContext | null = null,
+  ) {
+    this.table = rel?.table ?? "";
+  }
 
   ws(): void {
     while (this.pos < this.src.length && /\s/.test(this.src[this.pos])) this.pos++;
@@ -102,7 +113,63 @@ class Parser {
       this.expect(")", "“)”");
       return inner;
     }
-    return this.predicate();
+    return this.relation() ?? this.predicate();
+  }
+
+  /** `has x`, `has no x`, `no x`, `count(x) >= n`; `x(…)` narrows the related rows. */
+  relation(): RelNode | null {
+    this.ws();
+    const rest = this.src.slice(this.pos);
+    const count = /^count\s*\(/i.exec(rest);
+    if (count) {
+      this.pos += count[0].length;
+      const target = this.relTarget();
+      this.expect(")", "“)” after count(…");
+      const at = this.pos;
+      const op = this.op();
+      if (!op || !COUNT_OPS.includes(op as CountOp)) this.fail("Expected =, !=, <, <=, > or >= after count(…)", at);
+      this.ws();
+      const n = /^\d{1,9}/.exec(this.src.slice(this.pos));
+      if (!n) this.fail("Expected a whole number");
+      this.pos += n[0].length;
+      return { ...target, quant: { count: { op: op as CountOp, n: Number(n[0]) } } };
+    }
+    if (this.keyword("has")) return { ...this.relTargetAfter(this.keyword("no")), id: newId() };
+    if (this.keyword("no")) return { ...this.relTargetAfter(true), id: newId() };
+    return null;
+  }
+
+  private relTargetAfter(none: boolean): RelNode {
+    return { ...this.relTarget(), quant: none ? "none" : "some" };
+  }
+
+  /** A relationship name (of the table being filtered) and, in parentheses, conditions on its rows. */
+  relTarget(): Omit<RelNode, "quant"> {
+    this.ws();
+    const start = this.pos;
+    let label: string;
+    if (this.src[this.pos] === "`") label = this.ident();
+    else {
+      const m = /^[A-Za-z_][A-Za-z0-9_$.+]*/.exec(this.src.slice(this.pos));
+      if (!m) this.fail("Expected the name of a related table");
+      label = m[0];
+      this.pos += m[0].length;
+    }
+    const options = this.rel ? this.rel.options(this.table) : [];
+    const opt = options.find((o) => o.label === label) ?? options.find((o) => o.label.toLowerCase() === label.toLowerCase());
+    if (!opt) {
+      this.fail(options.length ? `No related table “${label}”: try ${options.map((o) => o.label).join(", ")}` : "This table has no known relationships", start, this.pos);
+    }
+    let filter: GroupNode | undefined;
+    if (this.char("(")) {
+      const outer = this.table;
+      this.table = opt.tableId;
+      const inner = this.or();
+      this.table = outer;
+      this.expect(")", "“)”");
+      filter = inner.t === "group" && !inner.not ? inner : { t: "group", id: newId(), op: "and", items: [inner] };
+    }
+    return { t: "rel", id: newId(), label: opt.label, schema: opt.schema, table: opt.table, on: opt.on, ...(filter ? { filter } : {}) };
   }
 
   ident(): string {
@@ -236,9 +303,19 @@ class Parser {
   }
 }
 
-/** Parses an expression into a filter tree (root: a group); throws `ParseError`. Empty text: empty tree. */
-export function parseExpression(text: string): GroupNode {
-  const p = new Parser(text);
+/** What `has …`, `no …` and `count(…)` refer to: the relationships of each table. */
+export interface RelContext {
+  /** The table the expression filters (`schema.table`). */
+  table: string;
+  options: (tableId: string) => RelOption[];
+}
+
+/**
+ * Parses an expression into a filter tree (root: a group); throws `ParseError`. Empty text: empty
+ * tree. Without `rel`, related-row conditions are refused.
+ */
+export function parseExpression(text: string, rel: RelContext | null = null): GroupNode {
+  const p = new Parser(text, rel);
   p.ws();
   if (p.pos >= text.length) return { t: "group", id: newId(), op: "and", items: [] };
   const node = p.or();
@@ -305,10 +382,20 @@ function printCond(c: CondNode): string {
   }
 }
 
+function printRel(r: RelNode): string {
+  const name = /^[A-Za-z_][A-Za-z0-9_$.+]*$/.test(r.label) && !KEYWORDS.has(r.label.toLowerCase()) ? r.label : `\`${r.label.replace(/`/g, "``")}\``;
+  const inner = r.filter ? printExpression(r.filter) : "";
+  const target = inner ? `${name}(${inner})` : name;
+  if (r.quant === "some") return `has ${target}`;
+  if (r.quant === "none") return `no ${target}`;
+  return `count(${target}) ${COUNT_SYMBOL[r.quant.count.op]} ${r.quant.count.n}`;
+}
+
 /** The tree as expression text (switched-off nodes left out); `parseExpression` reads it back. */
 export function printExpression(node: FilterNode, top = true): string {
   if (node.off) return "";
   if (node.t === "cond") return printCond(node);
+  if (node.t === "rel") return printRel(node);
   const parts = node.items.map((i) => printExpression(i, false)).filter((s) => s);
   if (!parts.length) return "";
   const joined = parts.join(` ${node.op} `);
@@ -329,6 +416,8 @@ export interface CompletionContext {
   columns: { name: string; kind: ColKind; enumValues?: string[] }[];
   /** Known values of a column (enum labels, cached profile values). */
   values?: (column: string) => string[];
+  /** Names of the table's relationships (`has …`, `no …`, `count(…)`). */
+  relations?: string[];
 }
 
 /** Suggestions at `caret`: columns, then operators for the column, then values, then and/or. */
@@ -339,11 +428,23 @@ export function complete(text: string, caret: number, ctx: CompletionContext): {
   const head = before.slice(0, from).replace(/\s+$/, "");
   const lw = word.toLowerCase();
   const pick = (items: Suggestion[]) => ({ from, to: caret, items: items.filter((s) => s.label.toLowerCase().startsWith(lw) && s.label.toLowerCase() !== lw).slice(0, 30) });
+  const rels = ctx.relations ?? [];
   const columnItems = () => [
     ...ctx.columns.map((c) => ({ label: c.name, insert: `${printIdent(c.name)} `, detail: c.kind })),
     { label: "any", insert: "any ~ ", detail: "search every text column" },
+    ...(rels.length
+      ? [
+          { label: "has", insert: "has ", detail: "rows with related rows" },
+          { label: "no", insert: "no ", detail: "rows without related rows" },
+          { label: "count", insert: "count(", detail: "number of related rows" },
+        ]
+      : []),
     { label: "not", insert: "not ", detail: "negate" },
   ];
+  // After has / no / count(: a related table.
+  if (/(^|[\s(])(has(\s+no)?|no)$/i.test(head) || /(^|[\s(])count\s*\($/i.test(head)) {
+    return pick(rels.map((r) => ({ label: r, insert: /\bcount\s*\($/i.test(head) ? `${r}) ` : `${r} `, detail: "related rows" })));
+  }
   // Start, or after and / or / not / "(": a column.
   if (!head || /(^|\s)(and|or|not)$/i.test(head) || head.endsWith("(") && !/\bin\s*\($/i.test(head)) return pick(columnItems());
   const colAtEnd = /(`(?:[^`]|``)+`|[A-Za-z_][A-Za-z0-9_$.]*)$/.exec(head);
