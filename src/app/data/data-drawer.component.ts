@@ -12,13 +12,13 @@ import { nodeText } from "../filter/printer";
 import { hasActive, singleColumn } from "../filter/tree";
 import { BrowseLocation, BrowserStore } from "../state/browser.store";
 import { ExpressionBoxComponent } from "./filter/expression-box.component";
-import { FilterBarComponent } from "./filter/filter-bar.component";
+import { type CopyKind, FilterBarComponent } from "./filter/filter-bar.component";
 import type { FkSource, SavedSource, ValueSource } from "../filter/pickers";
 import { ProfileViewComponent } from "./profile-view.component";
 import { QueryViewComponent } from "./query-view.component";
 import { QueryStore } from "../state/query.store";
 import { RowGraphStore } from "../state/row-graph.store";
-import { WorkspaceStore } from "../state/workspace.store";
+import { WorkspaceStore, isCancelled } from "../state/workspace.store";
 
 const HEIGHT_KEY = "xdiagram.dataDrawerHeight";
 const TEXT_KEY = "xdiagram.filterTextOpen";
@@ -424,10 +424,20 @@ export class DataDrawerComponent {
     setLabel: (column, label) => this.store.setFkLabel(column, label),
   };
 
-  /** Copy menu of the filter bar: the filter as an expression, or the rows shown as SQL. */
-  protected async copyFilter(what: "sql" | "expression"): Promise<void> {
+  /** Copy / Export menu of the filter bar: the filter as an expression, the rows as SQL, CSV or JSON. */
+  protected async copyFilter(what: CopyKind): Promise<void> {
     const where = this.store.current()?.where;
     if (!where) return;
+    if (what === "csv" || what === "json") {
+      this.workspace.flash("Reading the rows…");
+      try {
+        const done = await this.store.exportRows(what);
+        if (done) this.workspace.flash(`${done.rows.toLocaleString("en-US")} rows exported${done.truncated ? " (the first 50,000: more rows match)" : ""}`);
+      } catch (err) {
+        this.workspace.flash(`Export failed: ${isCancelled(err) ? "cancelled" : errorMessage(err)}`);
+      }
+      return;
+    }
     try {
       const text = what === "sql" ? await this.store.sqlText() : printExpression(where);
       await navigator.clipboard?.writeText(text);

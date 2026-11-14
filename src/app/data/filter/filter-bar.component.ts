@@ -11,6 +11,9 @@ import { printExpression } from "../../filter/expression";
 import type { SavedFilter } from "../../filter/memory";
 import type { FkSource, SavedSource, ValueSource } from "../../filter/pickers";
 
+/** The Copy / Export menu's items. */
+export type CopyKind = "sql" | "expression" | "csv" | "json";
+
 interface Editing {
   /** The node being edited (a copy: applied on Apply). */
   draft: FilterNode;
@@ -66,12 +69,15 @@ interface Editing {
     @if (canCopy()) {
       <span class="saved-wrap">
         <button type="button" class="text" [class.on]="copyMenu()" [attr.aria-expanded]="copyMenu()" (click)="copyMenu.set(!copyMenu())"
-          title="Copy the filter as text or the rows shown as SQL">Copy</button>
+          title="Copy the filter as text or the rows as SQL; export the rows as CSV or JSON">Copy / Export</button>
         @if (copyMenu()) {
           <div class="scrim" (click)="copyMenu.set(false)"></div>
-          <div class="saved-menu" role="menu" aria-label="Copy">
-            <button type="button" role="menuitem" class="use" [disabled]="!hasActiveFilter()" (click)="copyAs('expression')">Filter as text (expression)</button>
-            <button type="button" role="menuitem" class="use" (click)="copyAs('sql')">Rows shown as SQL (values written in)</button>
+          <div class="saved-menu" role="menu" aria-label="Copy or export">
+            <button type="button" role="menuitem" class="use" [disabled]="!hasActiveFilter()" (click)="copyAs('expression')">Copy the filter as text (expression)</button>
+            <button type="button" role="menuitem" class="use" (click)="copyAs('sql')">Copy the rows as SQL (values written in)</button>
+            <div class="sep"></div>
+            <button type="button" role="menuitem" class="use" (click)="copyAs('csv')" title="All matching rows, sorted, whole values (the first 50,000)">Export rows as CSV…</button>
+            <button type="button" role="menuitem" class="use" (click)="copyAs('json')" title="All matching rows, sorted, whole values (the first 50,000)">Export rows as JSON…</button>
           </div>
         }
       </span>
@@ -175,6 +181,7 @@ interface Editing {
     .saved-item:hover, .saved-item.on { background: var(--hover); }
     .saved-item.on .use { font-weight: 600; }
     .saved-menu > .use { border-radius: 5px; }
+    .sep { height: 1px; background: var(--border); margin: 3px 0; }
     .saved-menu > .use:hover:not(:disabled) { background: var(--hover); }
     .use:disabled { color: var(--text-muted); cursor: default; }
     .use { flex: 1; text-align: left; font: inherit; font-size: 12px; border: 0; background: none; color: var(--text); padding: 4px 6px; cursor: pointer;
@@ -221,7 +228,7 @@ export class FilterBarComponent {
   readonly sort = input<SortKey[]>([]);
   /** Shows the Copy menu (the parent copies). */
   readonly canCopy = input(false);
-  readonly copy = output<"sql" | "expression">();
+  readonly copy = output<CopyKind>();
   readonly treeChange = output<GroupNode>();
   /** Whether the expression box is shown (the Text button). */
   readonly textOpen = input(false);
@@ -247,7 +254,7 @@ export class FilterBarComponent {
   protected readonly copyMenu = signal(false);
   protected readonly hasActiveFilter = computed(() => hasActive(this.tree()));
 
-  protected copyAs(what: "sql" | "expression"): void {
+  protected copyAs(what: CopyKind): void {
     this.copyMenu.set(false);
     this.copy.emit(what);
   }

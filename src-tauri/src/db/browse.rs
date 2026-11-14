@@ -228,6 +228,11 @@ pub fn page_order(d: Dialect, meta: &TableMeta, req: &BrowseRequest) -> Result<(
 
 /// The statement for one page of rows (`limit + 1` rows, to learn whether there are more).
 pub fn plan_page(d: Dialect, cat: &Catalog, req: &BrowseRequest) -> Result<Stmt, AppError> {
+    rows_stmt(d, cat, req, req.limit.clamp(1, MAX_LIMIT) + 1, req.offset)
+}
+
+/// `fetch` matching rows from `offset`, filtered and in page order, every value as text.
+fn rows_stmt(d: Dialect, cat: &Catalog, req: &BrowseRequest, fetch: u32, offset: u64) -> Result<Stmt, AppError> {
     let meta = meta_of(cat, req)?;
     let mut r = Render::new(d);
     let filter = combine(req.filter.as_ref(), &req.filters);
@@ -239,8 +244,55 @@ pub fn plan_page(d: Dialect, cat: &Catalog, req: &BrowseRequest) -> Result<Stmt,
     if let Some(c) = cond {
         sql.push_str(&format!(" WHERE {c}"));
     }
-    sql.push_str(&d.paging(&order, req.limit.clamp(1, MAX_LIMIT) + 1, req.offset));
+    sql.push_str(&d.paging(&order, fetch, offset));
     Ok(Stmt { sql, params: r.params, timeout_s: req.timeout(), optional: false })
+}
+
+/// Rows exported at most (more are reported, not written).
+pub const MAX_EXPORT_ROWS: u32 = 50_000;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRequest {
+    /// Its filter, sort and columns; its page is ignored (export starts at the first row).
+    pub request: BrowseRequest,
+    #[serde(default)]
+    pub max_rows: Option<u32>,
+}
+
+impl ExportRequest {
+    pub fn max_rows(&self) -> u32 {
+        self.max_rows.unwrap_or(MAX_EXPORT_ROWS).clamp(1, MAX_EXPORT_ROWS)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportResult {
+    pub columns: Vec<BrowseColumn>,
+    /// Whole values (not shortened as in pages); `None` is NULL.
+    pub rows: Vec<Vec<Option<String>>>,
+    /// More rows match than `maxRows`: only the first ones are here.
+    pub truncated: bool,
+    pub elapsed_ms: u64,
+}
+
+/// The matching rows for an export: from the first, in page order, `max + 1` to tell there are more.
+pub fn plan_export(d: Dialect, cat: &Catalog, req: &ExportRequest) -> Result<Stmt, AppError> {
+    rows_stmt(d, cat, &req.request, req.max_rows() + 1, 0)
+}
+
+pub fn finish_export(cat: &Catalog, req: &ExportRequest, ran: Vec<Ran>, started: Instant) -> Result<ExportResult, AppError> {
+    let meta = meta_of(cat, &req.request)?;
+    let mut rows = match ran.into_iter().next() {
+        Some(Ran::Rows(rows)) => rows,
+        Some(Ran::Failed(e)) => return Err(e),
+        _ => return Err(AppError::Invalid("The rows could not be read".into())),
+    };
+    let max = req.max_rows() as usize;
+    let truncated = rows.len() > max;
+    rows.truncate(max);
+    Ok(ExportResult { columns: projected(meta, &req.request)?.into_iter().cloned().collect(), rows, truncated, elapsed_ms: started.elapsed().as_millis() as u64 })
 }
 
 /// The rows shown, as SQL to read or run elsewhere ("Copy as SQL"): the filter with its values
@@ -541,6 +593,23 @@ mod tests {
             assert_eq!(ids(&text.replace("SELECT *", "SELECT \"t0\".\"id\""), &[]), bound_ids, "{text}");
             assert!(!bound_ids.is_empty(), "{arg}");
         }
+    }
+
+    #[test]
+    fn export_reads_from_the_first_row_without_page_limits() {
+        let pg = catalog(Dialect::Postgres, &[("id", "integer", false), ("role", "text", true)], &["id"], None);
+        let mut req = ExportRequest { request: request(), max_rows: Some(2) };
+        req.request.filter = Some(FilterNode::Cond { id: "c".into(), column: "role".into(), op: Op::Eq, args: vec!["admin".into()], cs: false });
+        let st = plan_export(Dialect::Postgres, &pg, &req).unwrap();
+        assert!(st.sql.ends_with("WHERE \"t0\".\"role\" = ($1::text)::text ORDER BY \"t0\".\"id\" LIMIT 3 OFFSET 0"), "{}", st.sql);
+        let long = "x".repeat(MAX_CELL_CHARS + 10);
+        let rows = vec![vec![Some("1".into()), Some(long.clone())], vec![Some("2".into()), None], vec![Some("3".into()), None]];
+        let out = finish_export(&pg, &req, vec![Ran::Rows(rows)], Instant::now()).unwrap();
+        assert!(out.truncated);
+        assert_eq!(out.rows.len(), 2);
+        assert_eq!(out.rows[0][1].as_deref(), Some(long.as_str()), "values are not shortened");
+        req.max_rows = Some(10_000_000);
+        assert_eq!(req.max_rows(), MAX_EXPORT_ROWS);
     }
 
     #[test]

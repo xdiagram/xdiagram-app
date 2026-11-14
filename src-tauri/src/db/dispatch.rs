@@ -3,7 +3,8 @@
 use std::time::Instant;
 
 use super::browse::{
-    finish_count, finish_page, pg_fetch_text, pg_row_estimate, pg_table_columns, plan_count, plan_page, plan_sql_text, BrowseColumn, BrowseRequest, BrowseResult, CountRequest,
+    finish_count, finish_export, finish_page, pg_fetch_text, pg_row_estimate, pg_table_columns, plan_count, plan_export, plan_page, plan_sql_text, BrowseColumn, BrowseRequest,
+    BrowseResult, CountRequest, ExportRequest, ExportResult,
     CountResult,
 };
 use super::catalog::{Catalog, TableInfo, TableMeta};
@@ -182,6 +183,14 @@ pub async fn count_rows(input: &ConnectionInput, request: CountRequest) -> Resul
     let tables = vec![(request.request.schema.clone(), request.request.table.clone())];
     let req = request.clone();
     run(input, tables, move |d, cat| Ok(vec![plan_count(d, cat, &req)?]), move |_, _, ran| finish_count(&request, ran, started)).await
+}
+
+/// The rows a browse request's filter matches, from the first, whole values: for an export.
+pub async fn export_rows(input: &ConnectionInput, request: ExportRequest) -> Result<ExportResult, AppError> {
+    let started = Instant::now();
+    let tables = vec![(request.request.schema.clone(), request.request.table.clone())];
+    let req = request.clone();
+    run(input, tables, move |d, cat| Ok(vec![plan_export(d, cat, &req)?]), move |_, cat, ran| finish_export(cat, &request, ran, started)).await
 }
 
 /// The rows a browse request shows, as SQL text with the values written in (nothing is run).

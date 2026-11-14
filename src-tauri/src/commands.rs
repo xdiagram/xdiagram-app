@@ -89,6 +89,12 @@ pub async fn count_rows(input: ConnectionInput, request: db::browse::CountReques
     ops::cancellable(op_id, dispatch::count_rows(&input, request)).await
 }
 
+/// The rows a browse request's filter matches, whole values, up to 50,000 (read-only): exports.
+#[tauri::command]
+pub async fn export_rows(input: ConnectionInput, request: db::browse::ExportRequest, op_id: Option<String>) -> Result<db::browse::ExportResult, AppError> {
+    ops::cancellable(op_id, dispatch::export_rows(&input, request)).await
+}
+
 /// The rows a browse request shows, as SQL with the values written in ("Copy as SQL"). Reads
 /// only the table's columns; nothing else runs.
 #[tauri::command]

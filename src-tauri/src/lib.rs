@@ -59,6 +59,7 @@ pub fn run() {
             commands::value_counts,
             commands::describe_table,
             commands::filter_sql,
+            commands::export_rows,
             commands::profile_table,
             commands::join_sql,
             commands::browse_join,

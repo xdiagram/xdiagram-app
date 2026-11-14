@@ -17,6 +17,7 @@ import {
 } from "../core/tauri-api.service";
 import { splitTableId } from "../diagram/canvas-edit";
 import type { VRef } from "../diagram/view-model";
+import { toCsv, toJson } from "../export/rows-export";
 import { kindOf } from "../filter/kinds";
 import { labelColumn } from "../filter/label-column";
 import type { FkRows, FkTarget } from "../filter/pickers";
@@ -300,6 +301,26 @@ export class BrowserStore {
     if (!loc || !conn) throw new Error("Not connected");
     const { schema, table } = splitTableId(loc.tableId);
     return this.api.filterSql(conn.input, { schema, table, filters: [], filter: this.wire(loc), sort: loc.sort, limit: PAGE_SIZE, offset: 0 });
+  }
+
+  /**
+   * Saves the rows the filter matches (all pages, sorted, whole values; the first 50,000) as CSV
+   * or JSON, asking where. `null`: cancelled at the save dialog.
+   */
+  async exportRows(format: "csv" | "json"): Promise<{ rows: number; truncated: boolean } | null> {
+    const loc = this.current();
+    const conn = await this.workspace.currentConnection();
+    if (!loc || !conn) throw new Error("Not connected");
+    const { schema, table } = splitTableId(loc.tableId);
+    const op = crypto.randomUUID();
+    this.running.add(op);
+    const request = { schema, table, filters: [], filter: this.wire(loc), sort: loc.sort, limit: PAGE_SIZE, offset: 0, timeoutSecs: this.settings.settings().queryTimeoutSecs };
+    const r = await this.api.exportRows(conn.input, { request }, op).finally(() => this.running.delete(op));
+    const columns = r.columns.map((c) => c.name);
+    const contents = format === "csv" ? toCsv(columns, r.rows) : toJson(columns, r.rows);
+    const name = schema && schema !== "public" ? `${schema}.${table}` : table;
+    const path = await this.api.saveFile({ defaultName: `${name}.${format}`, filterName: format.toUpperCase(), extensions: [format], contents, base64: false });
+    return path ? { rows: r.rows.length, truncated: r.truncated } : null;
   }
 
   /** The named filters of the current table. */

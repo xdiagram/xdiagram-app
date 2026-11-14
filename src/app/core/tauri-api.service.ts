@@ -206,6 +206,16 @@ export interface BrowseRequest {
   columns?: string[];
 }
 
+/** Rows for an export (see Rust `browse::ExportResult`). */
+export interface ExportResult {
+  columns: BrowseColumn[];
+  /** Whole values (not shortened); null is NULL. */
+  rows: (string | null)[][];
+  /** More rows match than were read. */
+  truncated: boolean;
+  elapsedMs: number;
+}
+
 /** A table's columns and key, without rows (see Rust `catalog::TableInfo`). */
 export interface TableInfo {
   columns: BrowseColumn[];
@@ -477,6 +487,11 @@ export class TauriApi {
   /** How many rows match a browse request's filter, counted up to `cap` (time-limited). */
   countRows(input: ConnectionInput, request: { request: BrowseRequest; cap?: number }, opId?: string): Promise<CountResult> {
     return this.db("count_rows", { input, request, opId });
+  }
+
+  /** The rows a browse request's filter matches, whole values, up to 50,000 (read-only). */
+  exportRows(input: ConnectionInput, request: { request: BrowseRequest; maxRows?: number }, opId?: string): Promise<ExportResult> {
+    return this.db("export_rows", { input, request, opId });
   }
 
   /** The rows a browse request shows, as SQL with the values written in (nothing is run). */
