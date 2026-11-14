@@ -40,7 +40,7 @@ export function highlightTerms(node: FilterNode | null): { all: string[]; byColu
       return;
     }
     // Conditions on related rows are about another table's values.
-    if (n.t === "rel") return;
+    if (n.t === "rel" || n.t === "cols") return;
     const v = n.args[0];
     if (typeof v !== "string" || !v) return;
     if (n.column === SEARCH_COLUMN) all.push(v);

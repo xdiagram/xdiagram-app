@@ -15,6 +15,7 @@ export function toWire(node: FilterNode | null, now: Date, kindOf: (column: stri
     if (!items.length) return null;
     return { t: "group", id: node.id, op: node.op, ...(node.not ? { not: true } : {}), items };
   }
+  if (node.t === "cols") return { t: "cols", id: node.id, left: node.left, op: node.op, right: node.right };
   if (node.t === "rel") {
     // The related table's kinds when known; else timestamps (Rust takes them for dates too).
     const inner = relKindOf?.(`${node.schema}.${node.table}`) ?? (() => "timestamp" as ColKind);

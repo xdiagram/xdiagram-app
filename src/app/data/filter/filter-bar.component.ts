@@ -1,12 +1,13 @@
 import { ChangeDetectionStrategy, Component, computed, input, output, signal } from "@angular/core";
 
 import type { BrowseColumn, Engine, FilterIssue } from "../../core/tauri-api.service";
-import { kindOf } from "../../filter/kinds";
-import { type CondNode, type FilterNode, type GroupNode, newId, type Op, type RelNode, SEARCH_COLUMN, type SortKey } from "../../filter/model";
+import { comparableKinds, kindOf } from "../../filter/kinds";
+import { type ColsNode, type CondNode, type CountOp, type FilterNode, type GroupNode, newId, type Op, type RelNode, SEARCH_COLUMN, type SortKey } from "../../filter/model";
 import type { RelOption } from "../../filter/relations";
+import { ColsRowComponent } from "./cols-row.component";
 import { RelEditorComponent } from "./rel-editor.component";
 import { opsFor } from "../../filter/operators";
-import { condLabel, nodeText } from "../../filter/printer";
+import { COLS_SYMBOL, condLabel, nodeText } from "../../filter/printer";
 import { addNode, hasActive, removeNode, replaceNode, toggleOff } from "../../filter/tree";
 import { ConditionRowComponent } from "./condition-row.component";
 import { printExpression } from "../../filter/expression";
@@ -32,7 +33,7 @@ interface Editing {
  */
 @Component({
   selector: "app-filter-bar",
-  imports: [ConditionRowComponent, RelEditorComponent],
+  imports: [ConditionRowComponent, ColsRowComponent, RelEditorComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { "(document:keydown.escape)": "cancel()" },
   template: `
@@ -53,6 +54,8 @@ interface Editing {
               <span class="op">{{ l.op }}</span>
             }
             <span class="val">{{ l.value }}</span>
+          } @else if (n.t === "cols") {
+            <b>{{ n.left }}</b><span class="op">{{ colsSymbol[n.op] }}</span><b>{{ n.right }}</b>
           } @else {
             <span class="val">{{ text(n) }}</span>
           }
@@ -124,7 +127,12 @@ interface Editing {
       <div class="editor" role="dialog" aria-label="Edit filter" [style.left.px]="e.x" [style.top.px]="e.y">
         @if (e.draft.t === "cond") {
           <app-condition-row [columns]="columns()" [engine]="engine()" [node]="e.draft" [issue]="issueOf(e.draft)" [values]="values()" [fk]="fk()"
-            (changed)="setDraft($event)" (submit)="apply()" />
+            (changed)="setDraft($event)" (toColumns)="setDraft(toCols(e.draft))" (submit)="apply()" />
+        } @else if (e.draft.t === "cols") {
+          <app-cols-row [columns]="columns()" [engine]="engine()" [node]="e.draft" (changed)="setDraft($event)" (toValue)="setDraft($event)" />
+          @if (issueOf(e.draft); as msg) {
+            <div class="issue">{{ msg }}</div>
+          }
         } @else if (e.draft.t === "rel") {
           <app-rel-editor [options]="rels()" [node]="e.draft" [engine]="engine()" [columnsOf]="relColumns()!" (changed)="setDraft($event)" (submit)="apply()" />
           @if (issueOf(e.draft); as msg) {
@@ -143,7 +151,9 @@ interface Editing {
             <div class="item">
               @if (c.t === "cond") {
                 <app-condition-row [columns]="columns()" [engine]="engine()" [node]="c" [issue]="issueOf(c)" [values]="values()" [fk]="fk()"
-                  (changed)="setDraftItem($event)" (submit)="apply()" />
+                  (changed)="setDraftItem($event)" (toColumns)="setDraftItem(toCols(c))" (submit)="apply()" />
+              } @else if (c.t === "cols") {
+                <app-cols-row [columns]="columns()" [engine]="engine()" [node]="c" (changed)="setDraftItem($event)" (toValue)="setDraftItem($event)" />
               } @else {
                 <span class="nested">{{ text(c) }}</span>
               }
@@ -403,7 +413,20 @@ export class FilterBarComponent {
     if (o) this.open({ t: "rel", id: newId(), label: o.label, schema: o.schema, table: o.table, on: o.on, quant: "some" }, true, event);
   }
 
-  protected setDraft(node: CondNode | RelNode): void {
+  protected readonly colsSymbol = COLS_SYMBOL;
+
+  /** "vs column": the condition becomes a comparison with the first other column that compares. */
+  protected toCols(c: CondNode): ColsNode {
+    const kind = (name: string) => {
+      const col = this.columns().find((x) => x.name === name);
+      return col ? kindOf(col, this.engine()) : "other";
+    };
+    const right = this.columns().find((x) => x.name !== c.column && comparableKinds(kind(c.column), kind(x.name)))?.name ?? c.column;
+    const op = (["eq", "ne", "lt", "le", "gt", "ge"].includes(c.op) ? c.op : "eq") as CountOp;
+    return { t: "cols", id: c.id, left: c.column, op, right };
+  }
+
+  protected setDraft(node: CondNode | RelNode | ColsNode): void {
     this.editing.update((e) => (e ? { ...e, draft: node } : e));
   }
 
@@ -411,7 +434,7 @@ export class FilterBarComponent {
     this.editing.update((e) => (e && e.draft.t === "group" ? { ...e, draft: { ...e.draft, op } } : e));
   }
 
-  protected setDraftItem(node: CondNode): void {
+  protected setDraftItem(node: CondNode | ColsNode): void {
     this.editing.update((e) => (e && e.draft.t === "group" ? { ...e, draft: { ...e.draft, items: e.draft.items.map((i) => (i.id === node.id ? node : i)) } } : e));
   }
 
@@ -443,6 +466,7 @@ export class FilterBarComponent {
     // Edited conditions apply again (and stop being "from navigation").
     if (draft.t === "cond") draft = { ...draft, off: false, origin: undefined };
     else if (draft.t === "rel") draft = { ...draft, off: false, origin: undefined };
+    else if (draft.t === "cols") draft = { ...draft, off: false };
     const tree = e.isNew ? addNode(this.tree(), draft) : replaceNode(this.tree(), e.draft.id, draft);
     if (hasActive(draft) || !e.isNew) this.emit(tree);
   }

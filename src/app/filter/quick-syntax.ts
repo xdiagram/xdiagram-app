@@ -112,7 +112,7 @@ export function printQuick(node: FilterNode): string | null {
     if (!list) return node.items.length === 1 ? (negate ? "!null" : "null") : null;
     return `${negate ? "!" : ""}${[...list.args.map(plain), "null"].join(",")}`;
   }
-  if (node.t === "rel" || node.cs) return null;
+  if (node.t === "rel" || node.t === "cols" || node.cs) return null;
   const [a, b] = node.args;
   switch (node.op) {
     case "eq":

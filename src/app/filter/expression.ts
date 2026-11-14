@@ -1,5 +1,5 @@
 import type { ColKind } from "../core/tauri-api.service";
-import { type Arg, type CondNode, type CountOp, type FilterNode, type GroupNode, newId, type Op, type RelNode, SEARCH_COLUMN, type Span } from "./model";
+import { type Arg, type ColsNode, type CondNode, type CountOp, type FilterNode, type GroupNode, newId, type Op, type RelNode, SEARCH_COLUMN, type Span } from "./model";
 import { parsePoint, printPoint } from "./relative-dates";
 import type { RelOption } from "./relations";
 
@@ -15,6 +15,7 @@ import type { RelOption } from "./relations";
  *   col: today | yesterday | this week | this month | this year | last 7 days | 2026-11-14
  *   any ~ v                       (search in every text column)
  *   has orders   no orders   count(orders) >= 3   has orders(total > 100)   (related rows)
+ *   ends_on < `starts_on`         (another column: back quotes on the right)
  *   not …   ( … )   and   or
  *
  * Values: 'quoted' or "quoted" (\ escapes), or bare (numbers, dates, -7d for "7 days ago").
@@ -256,7 +257,7 @@ class Parser {
     this.fail("Expected a period: today, yesterday, this week, this month, this year, last 7 days, or a date");
   }
 
-  predicate(): CondNode {
+  predicate(): CondNode | ColsNode {
     this.ws();
     const start = this.pos;
     const quoted = this.src[this.pos] === "`";
@@ -297,6 +298,11 @@ class Parser {
     let op: Op | "span" | null = this.keyword("matches") ? "regex" : this.op();
     if (!op) this.fail("Expected an operator (=, !=, <, >, ~, in, between, is, …)");
     if (op === "span") return cond("range", [], { span: this.span() });
+    // A back-quoted name on the right is another column: ends_on < `starts_on`.
+    this.ws();
+    if (COUNT_OPS.includes(op as CountOp) && this.src[this.pos] === "`") {
+      return { t: "cols", id: newId(), left: column, op: op as CountOp, right: this.ident() };
+    }
     const node = cond(op, [this.value()]);
     if (TEXT_OPS.includes(op) && this.keyword("cs")) node.cs = true;
     return node;
@@ -396,6 +402,7 @@ export function printExpression(node: FilterNode, top = true): string {
   if (node.off) return "";
   if (node.t === "cond") return printCond(node);
   if (node.t === "rel") return printRel(node);
+  if (node.t === "cols") return `${printIdent(node.left)} ${COUNT_SYMBOL[node.op]} \`${node.right.replace(/`/g, "``")}\``;
   const parts = node.items.map((i) => printExpression(i, false)).filter((s) => s);
   if (!parts.length) return "";
   const joined = parts.join(` ${node.op} `);

@@ -72,7 +72,7 @@ export function setColumnFilter(root: GroupNode, column: string, node: FilterNod
 /** The column a node is about, when it is a condition or a group of conditions on one column. */
 export function singleColumn(n: FilterNode): string | null {
   if (n.t === "cond") return n.column;
-  if (n.t === "rel") return null;
+  if (n.t === "rel" || n.t === "cols") return null;
   const cols = new Set(n.items.map(singleColumn));
   return cols.size === 1 && !cols.has(null) ? [...cols][0] : null;
 }
@@ -87,6 +87,11 @@ export function renameColumns(root: GroupNode, fn: (column: string) => string | 
     if (n.t === "rel") {
       const on = n.on.map(([local, remote]) => [fn(local), remote] as const);
       return on.some(([local]) => local === null) ? null : { ...n, on: on.map(([l, r]) => [l as string, r] as [string, string]) };
+    }
+    if (n.t === "cols") {
+      const left = fn(n.left);
+      const right = fn(n.right);
+      return left === null || right === null ? null : { ...n, left, right };
     }
     if (n.t !== "cond" || n.column === SEARCH_COLUMN) return n;
     const column = fn(n.column);
@@ -117,6 +122,7 @@ export function hasActive(n: FilterNode | null): boolean {
 /** Columns of this table the tree names (not those inside related-row conditions). */
 export function columnsUsed(n: FilterNode, into = new Set<string>()): Set<string> {
   if (n.t === "cond") into.add(n.column);
+  else if (n.t === "cols") into.add(n.left).add(n.right);
   else if (n.t === "rel") n.on.forEach(([local]) => into.add(local));
   else for (const i of n.items) columnsUsed(i, into);
   return into;

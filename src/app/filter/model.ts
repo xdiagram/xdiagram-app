@@ -40,7 +40,8 @@ export type WireNode =
   | { t: "group"; id: string; op: BoolOp; not?: boolean; items: WireNode[] }
   | { t: "cond"; id: string; column: string; op: Op; args: string[]; cs?: boolean }
   | { t: "search"; id: string; text: string; columns?: string[]; cs?: boolean }
-  | { t: "rel"; id: string; schema: string; table: string; on: [string, string][]; quant: Quant; filter?: WireNode };
+  | { t: "rel"; id: string; schema: string; table: string; on: [string, string][]; quant: Quant; filter?: WireNode }
+  | { t: "cols"; id: string; left: string; op: CountOp; right: string };
 
 /**
  * The pseudo-column of a search in every text column (`any ~ text`): in the UI tree it is a
@@ -103,7 +104,17 @@ export interface RelNode {
   origin?: "nav";
 }
 
-export type FilterNode = GroupNode | CondNode | RelNode;
+/** One column compared with another of the same row (`ends_on < starts_on`). */
+export interface ColsNode {
+  t: "cols";
+  id: string;
+  left: string;
+  op: CountOp;
+  right: string;
+  off?: boolean;
+}
+
+export type FilterNode = GroupNode | CondNode | RelNode | ColsNode;
 
 export interface SortKey {
   column: string;

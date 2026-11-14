@@ -99,6 +99,22 @@ pub enum FilterNode {
         #[serde(default)]
         filter: Option<Box<FilterNode>>,
     },
+    /// One column compared with another of the same row (`ends_on < starts_on`). NULL on either
+    /// side matches nothing, as in SQL.
+    Cols { id: String, left: String, op: Op, right: String },
+}
+
+/// Text-like kinds compare by their text when they differ (an enum with a text column).
+fn text_like(k: ColKind) -> bool {
+    matches!(k, ColKind::Text | ColKind::Enum)
+}
+
+/// Whether two kinds compare directly (numbers with numbers, dates with timestamps, …).
+fn comparable(a: ColKind, b: ColKind) -> bool {
+    use ColKind::*;
+    let num = |k| matches!(k, Int | Decimal | Float);
+    let date = |k| matches!(k, Date | Timestamp | Timestamptz);
+    a == b && !matches!(a, Json | Binary | Other) || num(a) && num(b) || date(a) && date(b)
 }
 
 /// How many related rows a row must have.
@@ -129,7 +145,7 @@ pub fn tables_used(node: &FilterNode, out: &mut Vec<(String, String)>) {
                 tables_used(f, out);
             }
         }
-        FilterNode::Cond { .. } | FilterNode::Search { .. } => {}
+        FilterNode::Cond { .. } | FilterNode::Search { .. } | FilterNode::Cols { .. } => {}
     }
 }
 
@@ -251,6 +267,31 @@ impl Render {
             FilterNode::Cond { id, column, op, args, cs } => self.cond(s, id, column, *op, args, *cs),
             FilterNode::Search { id, text, columns, cs } => self.search(s, id, text, columns, *cs),
             FilterNode::Rel { id, schema, table, on, quant, filter } => self.rel(s, id, (schema, table), on, *quant, filter.as_deref(), depth),
+            FilterNode::Cols { id, left, op, right } => self.cols(s, id, left, *op, right),
+        }
+    }
+
+    /// `left op right` for two columns whose kinds compare; differing text kinds (an enum and a
+    /// text column) compare by their text.
+    fn cols(&mut self, s: &Scope, id: &str, left: &str, op: Op, right: &str) -> Option<String> {
+        let d = self.d;
+        let Some((l, le)) = s.resolve(d, left) else { return self.issue(id, format!("Unknown column “{left}”")) };
+        let Some((r, re)) = s.resolve(d, right) else { return self.issue(id, format!("Unknown column “{right}”")) };
+        let sym = match op {
+            Op::Eq => "=",
+            Op::Ne => "<>",
+            Op::Lt => "<",
+            Op::Le => "<=",
+            Op::Gt => ">",
+            Op::Ge => ">=",
+            _ => return self.issue(id, "Compare two columns with =, ≠, <, ≤, > or ≥"),
+        };
+        if comparable(l.kind, r.kind) {
+            Some(format!("{le} {sym} {re}"))
+        } else if text_like(l.kind) && text_like(r.kind) {
+            Some(format!("{} {sym} {}", d.text_expr(&le, l.kind, &l.type_name), d.text_expr(&re, r.kind, &r.type_name)))
+        } else {
+            self.issue(id, format!("“{}” ({}) and “{}” ({}) cannot be compared", l.name, l.type_name, r.name, r.type_name))
         }
     }
 
@@ -509,7 +550,7 @@ fn parenthesize(sql: &str) -> String {
 
 fn node_id(node: &FilterNode) -> &str {
     match node {
-        FilterNode::Group { id, .. } | FilterNode::Cond { id, .. } | FilterNode::Search { id, .. } | FilterNode::Rel { id, .. } => id,
+        FilterNode::Group { id, .. } | FilterNode::Cond { id, .. } | FilterNode::Search { id, .. } | FilterNode::Rel { id, .. } | FilterNode::Cols { id, .. } => id,
     }
 }
 
@@ -733,6 +774,22 @@ mod tests {
 
     fn rel(table: &str, on: (&str, &str), quant: Quant, filter: Option<FilterNode>) -> FilterNode {
         FilterNode::Rel { id: format!("rel-{table}"), schema: "public".into(), table: table.into(), on: vec![(on.0.into(), on.1.into())], quant, filter: filter.map(Box::new) }
+    }
+
+    #[test]
+    fn column_against_column() {
+        let m = meta(Dialect::Postgres, &[("id", "bigint"), ("n", "integer"), ("price", "numeric"), ("starts", "date"), ("ends", "timestamp with time zone"), ("name", "text"), ("role", "user_role"), ("doc", "jsonb")]);
+        let mut m = m;
+        m.columns.iter_mut().find(|c| c.name == "role").unwrap().kind = ColKind::Enum;
+        let cols = |l: &str, op: Op, r: &str| render(Dialect::Postgres, &m, &FilterNode::Cols { id: "c".into(), left: l.into(), op, right: r.into() });
+        assert_eq!(cols("ends", Op::Lt, "starts").unwrap().0, "\"t0\".\"ends\" < \"t0\".\"starts\"");
+        assert_eq!(cols("n", Op::Ge, "price").unwrap(), ("\"t0\".\"n\" >= \"t0\".\"price\"".to_string(), vec![]));
+        assert_eq!(cols("role", Op::Eq, "name").unwrap().0, "(\"t0\".\"role\")::text = \"t0\".\"name\"", "an enum and text compare as text");
+        assert_eq!(cols("n", Op::Ne, "id").unwrap().0, "\"t0\".\"n\" <> \"t0\".\"id\"");
+        assert!(cols("n", Op::Eq, "name").unwrap_err()[0].message.contains("cannot be compared"));
+        assert!(cols("doc", Op::Eq, "doc").is_err(), "JSON has no comparison");
+        assert!(cols("n", Op::Contains, "id").is_err());
+        assert!(cols("n", Op::Eq, "nope").unwrap_err()[0].message.contains("Unknown column"));
     }
 
     #[test]

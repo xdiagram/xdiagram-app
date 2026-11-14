@@ -1,9 +1,11 @@
-import { type Arg, type CondNode, type FilterNode, SEARCH_COLUMN } from "./model";
+import { type Arg, type CondNode, type CountOp, type FilterNode, SEARCH_COLUMN } from "./model";
 import { opInfo } from "./operators";
 import { pointLabel, spanLabel } from "./relative-dates";
 import { quantText } from "./relations";
 
 const argText = (a: Arg) => (typeof a === "string" ? a : pointLabel(a));
+
+export const COLS_SYMBOL: Record<CountOp, string> = { eq: "=", ne: "≠", lt: "<", le: "≤", gt: ">", ge: "≥" };
 
 /** The three parts of a condition's chip: column, operator, value. */
 export function condLabel(c: CondNode): { column: string; op: string; value: string } {
@@ -24,6 +26,7 @@ export function nodeText(n: FilterNode): string {
     const { column, op, value } = condLabel(n);
     return [column, op, value].filter((s) => s).join(" ");
   }
+  if (n.t === "cols") return `${n.left} ${COLS_SYMBOL[n.op]} ${n.right}`;
   if (n.t === "rel") {
     const inner = n.filter && n.filter.items.some((i) => !i.off) ? ` where ${nodeText(n.filter)}` : "";
     return `${quantText(n.quant, n.label)}${inner}`;

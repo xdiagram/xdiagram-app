@@ -1,4 +1,5 @@
 import { parseExpression, printExpression, type RelContext } from "./expression";
+import { comparableKinds } from "./kinds";
 import type { RelNode } from "./model";
 import { quantText, relOptions, relatedTo, type RefLike } from "./relations";
 import { renameColumns, reId, hasActive } from "./tree";
@@ -32,6 +33,28 @@ describe("relationships of a table", () => {
     expect(quantText("some", "orders")).toBe("has orders");
     expect(quantText("none", "orders")).toBe("has no orders");
     expect(quantText({ count: { op: "ge", n: 3 } }, "orders")).toBe("has ≥ 3 orders");
+  });
+});
+
+describe("a column compared with another", () => {
+  it("is written with the other column in back quotes", () => {
+    const tree = parseExpression("ends_on < `starts_on` and budget >= 10 and a != `b c`");
+    expect(tree.items[0]).toMatchObject({ t: "cols", left: "ends_on", op: "lt", right: "starts_on" });
+    expect(tree.items[1]).toMatchObject({ t: "cond", column: "budget" });
+    expect(tree.items[2]).toMatchObject({ t: "cols", left: "a", op: "ne", right: "b c" });
+    expect(printExpression(tree)).toBe("ends_on < `starts_on` and budget >= 10 and a != `b c`");
+    expect(() => parseExpression("a ~ `b`")).toThrow();
+  });
+
+  it("knows which kinds compare, and follows renames", () => {
+    expect(comparableKinds("int", "decimal")).toBe(true);
+    expect(comparableKinds("date", "timestamptz")).toBe(true);
+    expect(comparableKinds("enum", "text")).toBe(true);
+    expect(comparableKinds("int", "text")).toBe(false);
+    expect(comparableKinds("json", "json")).toBe(false);
+    const tree = parseExpression("ends_on < `starts_on`");
+    expect(renameColumns(tree, (c) => `p.${c}`).items[0]).toMatchObject({ left: "p.ends_on", right: "p.starts_on" });
+    expect(toWire(tree, new Date(), () => "date")).toMatchObject({ items: [{ t: "cols", left: "ends_on", op: "lt", right: "starts_on" }] });
   });
 });
 

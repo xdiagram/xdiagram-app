@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input, output, signal } from "@angular/core";
 
 import type { BrowseColumn, ColKind, Engine } from "../../core/tauri-api.service";
-import { isDateKind, kindOf } from "../../filter/kinds";
+import { comparableKinds, isDateKind, kindOf } from "../../filter/kinds";
 import { type Arg, type CondNode, type Op, SEARCH_COLUMN, type Span } from "../../filter/model";
 import { opInfo, opsFor } from "../../filter/operators";
 import { parsePoint, printPoint } from "../../filter/relative-dates";
@@ -97,6 +97,9 @@ const PERIODS: { value: string; label: string }[] = [
       <button type="button" class="pick" [class.on]="picker() === 'values'" [attr.aria-expanded]="picker() === 'values'" (click)="toggle('values')"
         title="Pick from this column's values, with how often each occurs among the matching rows">▾ Values</button>
     }
+    @if (canCompareColumns()) {
+      <button type="button" class="pick" (click)="toColumns.emit()" title="Compare with another column of the same row (ends_on < starts_on)">vs column</button>
+    }
     @if (fkTarget(); as t) {
       <button type="button" class="pick rows" [class.on]="picker() === 'rows'" [attr.aria-expanded]="picker() === 'rows'" (click)="toggle('rows')"
         [title]="'Pick a row of ' + t.tableId + ' by its name'">▾ {{ shortTable(t.tableId) }}</button>
@@ -151,6 +154,8 @@ export class ConditionRowComponent {
   /** Rows of referenced tables (foreign-key columns get a row picker). */
   readonly fk = input<FkSource | null>(null);
   readonly changed = output<CondNode>();
+  /** "vs column": the parent turns this into a column-against-column condition. */
+  readonly toColumns = output<void>();
   /** Enter in a value box. */
   readonly submit = output<void>();
 
@@ -222,6 +227,14 @@ export class ConditionRowComponent {
       this.kind() !== "bool" &&
       this.kind() !== "binary",
   );
+
+  /** A comparison (=, ≠, <, ≤, >, ≥) whose column compares with another column. */
+  protected readonly canCompareColumns = computed(() => {
+    const n = this.node();
+    if (n.column === SEARCH_COLUMN || !["eq", "ne", "lt", "le", "gt", "ge"].includes(n.op) || n.span) return false;
+    const k = this.kind();
+    return this.columns().some((c) => c.name !== n.column && comparableKinds(k, kindOf(c, this.engine())));
+  });
 
   /** The referenced table, for "= / ≠ / is one of" on a single-column foreign key. */
   protected readonly fkTarget = computed(() => {
