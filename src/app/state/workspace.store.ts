@@ -13,6 +13,7 @@ import { EMPTY_VIEW, type ViewModel } from "../diagram/view-model";
 import { timed, timedAsync } from "../core/perf";
 import { LayoutService, type Point, type Viewport } from "../persistence/layout.service";
 import { DraftService } from "../persistence/draft.service";
+import { FilterMemoryService } from "../persistence/filter-memory.service";
 import { type MergeConflict, mergeDbml } from "../editor/merge";
 import { CanvasHistory, type HistoryEntry, type LayoutState } from "./canvas-history";
 import { type SchemaChanges, diffSchemas, isEmptyChange } from "./schema-diff";
@@ -117,6 +118,7 @@ export class WorkspaceStore {
   private readonly profiles = inject(ProfilesService);
   private readonly parser = inject(DocumentParser);
   private readonly drafts = inject(DraftService);
+  private readonly filterMemory = inject(FilterMemoryService);
 
   readonly source = signal<Source | null>(null);
   readonly dbml = signal("");
@@ -215,7 +217,12 @@ export class WorkspaceStore {
 
   /** Writes the debounced saves (database tabs' DBML, layouts) now: before closing or restarting. */
   async flushPending(): Promise<void> {
-    await Promise.all([this.drafts.flush(), this.layouts.flush()]);
+    await Promise.all([this.drafts.flush(), this.layouts.flush(), this.filterMemory.flush()]);
+  }
+
+  /** The open database's identity (layouts, drafts and remembered filters are kept by it). */
+  databaseKey(): string | null {
+    return this.source()?.kind === "db" ? this.layoutKey : null;
   }
 
   // ------------------------------------------------------------------ opening documents

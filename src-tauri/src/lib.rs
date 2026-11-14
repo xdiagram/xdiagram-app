@@ -29,6 +29,7 @@ pub fn run() {
             let notices = data_dir.as_deref().map(|dir| fsutil::recover_json_files(dir, fsutil::STORE_FILES)).unwrap_or_default();
             app.manage(StartupNotices(std::sync::Mutex::new(notices)));
             app.manage(drafts::Drafts::new(data_dir.as_ref().map(|dir| dir.join("drafts"))));
+            app.manage(drafts::FilterMemory(drafts::Drafts::new(data_dir.as_ref().map(|dir| dir.join("filters")))));
 
             let handle = app.handle().clone();
             let notify: files::Notify = std::sync::Arc::new(move |change| {
@@ -76,6 +77,8 @@ pub fn run() {
             commands::load_draft,
             commands::save_draft,
             commands::delete_draft,
+            commands::load_filters,
+            commands::save_filters,
             commands::watch_file,
             commands::unwatch_file,
         ])

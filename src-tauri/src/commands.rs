@@ -261,6 +261,17 @@ pub async fn delete_draft(drafts: tauri::State<'_, crate::drafts::Drafts>, key: 
     drafts.delete(&key)
 }
 
+/// The Browse-data filters remembered for a database (JSON written by `FilterMemoryService`).
+#[tauri::command]
+pub async fn load_filters(memory: tauri::State<'_, crate::drafts::FilterMemory>, key: String) -> Result<Option<String>, AppError> {
+    memory.0.load(&key)
+}
+
+#[tauri::command]
+pub async fn save_filters(memory: tauri::State<'_, crate::drafts::FilterMemory>, key: String, contents: String) -> Result<(), AppError> {
+    memory.0.save(&key, &contents)
+}
+
 /// Messages about app files that were damaged and restored at start-up (each is reported once).
 #[tauri::command]
 pub fn startup_notices(notices: tauri::State<'_, crate::StartupNotices>) -> Vec<String> {

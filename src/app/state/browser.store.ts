@@ -6,9 +6,11 @@ import type { VRef } from "../diagram/view-model";
 import { kindOf } from "../filter/kinds";
 import { type FilterNode, type GroupNode, LIMITS, type SortKey, type WireNode } from "../filter/model";
 import { parseQuick } from "../filter/quick-syntax";
-import { addNode, emptyRoot, fromEquality, hasActive, setColumnFilter } from "../filter/tree";
+import { rememberTable } from "../filter/memory";
+import { addNode, emptyRoot, fromEquality, hasActive, setColumnFilter, toggleOff, withoutNav } from "../filter/tree";
 import { treeIssues } from "../filter/validate";
 import { toWire, wireKey } from "../filter/wire";
+import { FilterMemoryService } from "../persistence/filter-memory.service";
 import { SettingsService } from "../persistence/settings.service";
 import { WorkloadStore } from "./workload.store";
 import { WorkspaceStore, isCancelled } from "./workspace.store";
@@ -46,6 +48,7 @@ export class BrowserStore {
   private readonly workspace = inject(WorkspaceStore);
   private readonly workload = inject(WorkloadStore);
   private readonly settings = inject(SettingsService);
+  private readonly memory = inject(FilterMemoryService);
   /** Operations running now (rows, count, profile), so Cancel can stop them. */
   private readonly running = new Set<string>();
   private rowsOp: string | null = null;
@@ -120,13 +123,35 @@ export class BrowserStore {
     return this.workspace.source()?.kind === "db";
   }
 
-  /** Opens a table, starting a new trail. */
+  /**
+   * Opens a table, starting a new trail. Without filters, the table's remembered filter and
+   * sort (from the last time it was browsed in this database) come back.
+   */
   show(tableId: string, filters: BrowseFilter[] = []): void {
     if (!this.canBrowse()) return;
     this.mode.set("rows");
     this.history.set([{ tableId, where: fromEquality(filters, filters.length ? "nav" : undefined), sort: [], offset: 0 }]);
     this.open.set(true);
+    if (filters.length) void this.load();
+    else void this.restoreThenLoad(tableId);
+  }
+
+  private async restoreThenLoad(tableId: string): Promise<void> {
+    const key = this.workspace.databaseKey();
+    const remembered = key ? await this.memory.table(key, tableId) : null;
+    const cur = this.current();
+    // Only if nothing changed meanwhile.
+    if (remembered && cur?.tableId === tableId && this.history().length === 1 && !cur.where.items.length && !cur.sort.length) {
+      this.history.set([{ ...cur, where: remembered.where ?? cur.where, sort: remembered.sort ?? [] }]);
+    }
     void this.load();
+  }
+
+  /** Keeps the current table's filter and sort for next time (not the FK-navigation conditions). */
+  private remember(loc: BrowseLocation): void {
+    const key = this.workspace.databaseKey();
+    if (!key) return;
+    void this.memory.update(key, (m) => rememberTable(m, loc.tableId, { where: withoutNav(loc.where), sort: loc.sort }));
   }
 
   /** Opens a table's column profile. */
@@ -207,7 +232,9 @@ export class BrowserStore {
   private replace(patch: Partial<BrowseLocation>): void {
     const cur = this.current();
     if (!cur) return;
-    this.history.update((h) => [...h.slice(0, -1), { ...cur, ...patch }]);
+    const next = { ...cur, ...patch };
+    this.history.update((h) => [...h.slice(0, -1), next]);
+    if (patch.where || patch.sort) this.remember(next);
     void this.load();
   }
 
@@ -338,8 +365,19 @@ export class BrowserStore {
       void this.loadCount(loc, filter, result);
     } catch (err) {
       if (seq === this.seq) {
+        const issues = filterIssues(err);
+        // Columns that are gone (a remembered filter, a changed schema): their conditions are
+        // switched off, kept in the bar, and the rows load without them.
+        const gone = issues.filter((i) => i.message.startsWith("Unknown column"));
+        if (gone.length && gone.length === issues.length) {
+          this.workspace.flash(`${gone.length === 1 ? "A filtered column is" : "Filtered columns are"} no longer in the table: switched off`);
+          let where = loc.where;
+          for (const i of gone) where = toggleOff(where, i.node);
+          this.replace({ where });
+          return;
+        }
         this.result.set(null);
-        this.issues.set(filterIssues(err));
+        this.issues.set(issues);
         this.error.set(isCancelled(err) ? "Cancelled" : errorMessage(err));
         this.count.set({ state: "idle" });
       }

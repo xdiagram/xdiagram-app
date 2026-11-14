@@ -14,6 +14,9 @@ pub struct Drafts {
     dir: Option<PathBuf>,
 }
 
+/// The Browse-data filters remembered per database (same storage, `<app data>/filters/`).
+pub struct FilterMemory(pub Drafts);
+
 /// FNV-1a: stable across Rust versions (unlike `DefaultHasher`), so a draft keeps its file name.
 fn fnv1a64(text: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;

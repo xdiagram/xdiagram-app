@@ -381,6 +381,15 @@ export class TauriApi {
     return invoke("delete_draft", { key });
   }
 
+  /** The Browse-data filters remembered for a database (JSON written by `FilterMemoryService`). */
+  loadFilters(key: string): Promise<string | null> {
+    return invoke("load_filters", { key });
+  }
+
+  saveFilters(key: string, contents: string): Promise<void> {
+    return invoke("save_filters", { key, contents });
+  }
+
   watchFile(path: string): Promise<void> {
     return invoke("watch_file", { path });
   }
