@@ -48,9 +48,14 @@ every change made on the canvas is an edit to it.
   - Hundreds of tables stay smooth: parsing, completion and layout run off the main thread, and
     the canvas draws only what is on screen, in less detail when zoomed out (see below).
 - **Data browser** (read-only, every engine), a bottom drawer with three views:
-  - **Rows:** paging, sorting and per-column filters. Foreign-key values are links to the parent row,
+  - **Rows:** paging, sorting and filters. Foreign-key values are links to the parent row,
     "Referenced by" opens the child rows, and a breadcrumb trail lets you go back. Right-click a row
     to follow a key, copy a value, copy the row as JSON or show its related data.
+  - **Filters** (see "Filtering rows" below): a bar of chips, a filter box per column, Filter by
+    from any cell, AND/OR groups, operators that fit each column's type, periods such as "this week",
+    and a count of the matching rows. Each table's filter and sort are remembered per database.
+  - **Sorting:** click a header to sort, Shift+click to sort by several columns. The primary key is
+    always added last, so pages never repeat or skip rows.
   - **Profile:** per-column statistics from a sample of up to 20,000 rows (random `TABLESAMPLE` on
     PostgreSQL and SQL Server, the first rows on MySQL and SQLite).
     - Shows nulls, distinct values, range, lengths and the most common values.
@@ -136,6 +141,74 @@ App safety:
 - Saves go to a temporary file that then replaces the original, so a crash never leaves half a
   file. The app's own settings files are checked at start-up and restored from the previous
   start's copy if one was damaged.
+
+## Filtering rows
+
+Filters live in a bar above the grid. Each condition or group is a chip:
+
+- **Click** a chip to edit it, **tick** it to switch it off without losing it, **×** to remove it.
+- **All of / Any of** sets how the chips combine. **+ Group** adds conditions of which any (or
+  all) must match.
+- Chips that came from following a foreign key are dashed. Chips the database rejected are red,
+  with the reason.
+
+The editor offers the operators that fit the column:
+
+| Column | Operators |
+|---|---|
+| Numbers, dates, times | =, ≠, <, ≤, >, ≥, between, one of, none of |
+| Dates and timestamps | also **is in** a period: today, yesterday, this week (from Monday), this month, this year, the last N days, a given day |
+| Text | =, ≠, contains, does not contain, starts with, ends with, one of, is empty, is blank, has extra spaces, matches regex (PostgreSQL, MySQL); **Aa** makes matching case-sensitive |
+| Enums, booleans | a list of the allowed values |
+| Any nullable column | is null, is not null |
+
+**Column boxes.** Each column's box under the header takes a short syntax (Enter applies, an empty
+box removes that column's filter):
+
+| Type | Means |
+|---|---|
+| `abc` | equals |
+| `!=x` | not equal |
+| `>5` `>=5` `<5` `<=5` | compare |
+| `10..20` `10..` `..20` | between, at least, at most |
+| `~x` `!~x` | contains, does not contain |
+| `^x` `*x` | starts with, ends with |
+| `/re/` | regular expression |
+| `null` `!null` | is null, is not null |
+| `''` | is empty |
+| `"NULL"` | the text NULL (quotes make any value literal) |
+| `1,2,3` `!1,2` | one of, none of (not for text columns, whose values may contain commas) |
+| `today` `thisweek` `last7d` | a period (date columns) |
+| `>-7d` `<-2h` | relative to now: h, d, w, mo, y |
+| `2026-11-14` | that whole day (timestamp columns) |
+
+**From the grid.**
+- Right-click a cell: **Filter by** that value (=, ≠, <, >, or is null).
+- Ctrl+click cells of one column, then right-click: **is one of** the picked values.
+- Right-click a header: sort, then by this column, Filter…, clear the column's filter.
+
+**How values are compared.** A value is converted to the column's type, never the column to text,
+so an index on the column can serve the filter.
+- A value that cannot match its column (`abc` for a number, a date that does not exist) is
+  reported on its chip before anything is sent.
+- Text matching (contains, …) is case-insensitive by default: `ILIKE` on PostgreSQL, the column's
+  collation on MySQL and SQL Server, `LIKE` on SQLite (ASCII only). `%` and `_` in a value are
+  literal.
+- Periods use your computer's local time. `between` with two dates on a timestamp column includes
+  all of the second day.
+- SQL semantics apply: "does not equal", "none of" and switched groups do not match NULL.
+
+**Counting.** After a page loads, the footer shows how many rows match (up to 100,000, shown as
+"100,000+") or that counting took too long. The count runs within the same time limit as the
+query.
+
+**Remembered.** The last filter and sort of every table are kept per database and come back when
+the table is opened again, also after a restart. Conditions that came from following a foreign key
+are not kept. If a remembered condition names a column that no longer exists, it is switched off
+and the rows load without it.
+
+Filtering is read-only like the rest of the browser. Values are always bound parameters, columns are
+checked against the live table, and operators come from a fixed list. There is no free SQL box.
 
 ## SQL DDL import and export
 
