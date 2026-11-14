@@ -58,6 +58,8 @@ every change made on the canvas is an edit to it.
       text with suggestions.
     - Pick values from a list with their counts, or a referenced row by its name.
     - Save named filters, copy the filter or the rows as SQL, and export the rows as CSV or JSON.
+    - Filter by related rows ("users with no orders", "with at least 3 orders over 100"), compare
+      two columns, find duplicates and orphans, and narrow with facets.
   - **Sorting:** click a header to sort, Shift+click to sort by several columns. The primary key is
     always added last, so pages never repeat or skip rows.
   - **Profile:** per-column statistics from a sample of up to 20,000 rows (random `TABLESAMPLE` on
@@ -218,6 +220,11 @@ grid, and so are the values of contains, starts with, ends with and = conditions
 | `col is null` `is not null` `is empty` `is blank` `is padded` | null, empty, only spaces, extra spaces |
 | `col: today` `this week` `last 30 days` `2026-11-14` | a period |
 | `any ~ v` | search all columns |
+| `has orders` `no orders` | rows with some / no related rows |
+| `count(orders) >= 3` | a number of related rows (=, !=, <, <=, >, >=) |
+| `has orders(total > 100)` | only related rows that match count; inside, names are the related table's |
+| ``ends_on < `starts_on` `` | another column of the same row (back quotes on the right) |
+| `dup(email, org_id)` | values that occur in more than one row |
 | `not (…)` `and` `or` `( )` | combine (`and` binds tighter than `or`) |
 
 Values can be bare (`admin`, `42`, `-7d` for seven days ago) or quoted with `'…'` or `"…"`; column
@@ -234,6 +241,39 @@ names that need it go in back quotes.
   as key and name, to pick one by its name. The column shown as the name can be changed and is
   remembered for that table.
 - Date columns have a calendar. A day picked for `=` on a timestamp means that whole day.
+
+**Related rows.** **+ Related** filters rows by their rows in a related table: rows that have, have
+no, or have at least / at most / exactly N related rows. Conditions on the related table's own
+columns narrow which related rows count.
+- Relationships come from the diagram (declared and X-ray's). Tables pointing here are named after
+  themselves (`orders`); tables this one points at are named after the key column (`org` for
+  `org_id`). Composite keys and a table related to itself work.
+- **Related rows of these…** in the footer opens a related table filtered to the rows related to
+  every row that matches here, not just one: the memberships of these users, then their
+  organizations. Each is a step of the trail; its dashed chip is not remembered for that table.
+- They run as `EXISTS` / `NOT EXISTS` or a correlated `COUNT(*)`, nested up to three levels.
+
+**Two columns.** In the editor, **vs column** compares a column with another of the same row
+(`ends_on < starts_on`). Only columns of a comparable type are offered; a NULL on either side
+matches nothing.
+
+**Checks.** **Checks ▾** has ready-made data checks:
+- **Duplicate values**: tick the columns whose values repeat. It counts over the whole table, and
+  a NULL is never a duplicate.
+- **Orphans**: a key that is set but points at no row.
+- **Without any …**: rows nothing points at.
+- **Empty or blank text**, and **text with extra spaces**.
+
+**Facets.** **Facets** opens a panel beside the grid. For a few columns (by default the enums,
+booleans and foreign keys) it shows their most frequent values among the matching rows, with counts.
+- Tick values to filter the column to them. A column's counts leave out its own condition, so its
+  other values stay visible.
+- Facets can be added and removed per table, and the choice is remembered.
+
+**A whole-table read (PostgreSQL).** For a table of 10,000 rows or more, counting also asks
+PostgreSQL how it would run the filter (`EXPLAIN`, nothing runs). If it would read the whole table
+because no index serves the filter, the footer says "reads all ~N rows" and links to X-ray's index
+advice.
 
 **Saved filters.** **★ Saved** keeps named filters per table, conditions and sort together. The one
 matching what is shown is marked, and its tooltip spells it out. They are kept with the remembered
