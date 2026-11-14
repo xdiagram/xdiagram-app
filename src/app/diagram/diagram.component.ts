@@ -48,7 +48,7 @@ import {
 } from "./geometry";
 import { sceneToSvg } from "./svg-export";
 import { DiagramPalette, FONT_FAMILY, LIGHT, MONO_FAMILY, currentPalette } from "./theme";
-import { displayTable, type VField, type VRef, type VTable, type ViewModel } from "./view-model";
+import { displayTable, relatedTables, type VField, type VRef, type VTable, type ViewModel } from "./view-model";
 
 interface Tooltip {
   x: number;
@@ -358,6 +358,8 @@ export class DiagramComponent implements DiagramHandle {
   private inlineCancelled = false;
   /** A table created from the canvas, to rename as soon as it appears. */
   private renameWhenVisible: string | null = null;
+  /** Set by "Show only this & related": fit the camera to what is left once it is drawn. */
+  private fitWhenRendered = false;
   private linking: {
     from: FieldEnd;
     node: Konva.Group;
@@ -604,6 +606,10 @@ export class DiagramComponent implements DiagramHandle {
     if (created) {
       this.renameWhenVisible = null;
       setTimeout(() => this.startRenameTable(created), 0);
+    }
+    if (this.fitWhenRendered) {
+      this.fitWhenRendered = false;
+      setTimeout(() => this.fit(), 0);
     }
   }
 
@@ -1052,6 +1058,17 @@ export class DiagramComponent implements DiagramHandle {
       case "hide":
         if (box) this.store.toggleHidden(box.table.id);
         break;
+      case "isolate":
+        if (box) {
+          // Declared refs include links to hidden tables, so hidden neighbours come back;
+          // discovered (X-ray) refs are the same extra lines the canvas draws.
+          const keep = relatedTables([...this.store.view().refs, ...this.workload.discovered()], box.table.id);
+          this.fitWhenRendered = true;
+          this.store.showOnly(keep, "Show related tables");
+          const n = keep.size - 1;
+          this.store.flash(`Showing ${box.table.label} and ${n} related table${n === 1 ? "" : "s"}`);
+        }
+        break;
       case "copy":
         if (box) void navigator.clipboard?.writeText(box.table.label);
         break;
@@ -1245,14 +1262,7 @@ export class DiagramComponent implements DiagramHandle {
     if (!scene) return;
     const p = this.palette;
     const focus = this.store.focusMode() && !this.exporting ? this.selected : null;
-    const near = new Set<string>();
-    if (focus) {
-      near.add(focus);
-      for (const e of scene.edges) {
-        if (e.ref.from.table === focus) near.add(e.ref.to.table);
-        if (e.ref.to.table === focus) near.add(e.ref.from.table);
-      }
-    }
+    const near = focus ? relatedTables(scene.edges.map((e) => e.ref), focus) : new Set<string>();
     const facts = this.workload.enabled() && !this.exporting ? this.workload.facts() : null;
     for (const [id, view] of this.tableViews) {
       const idle = facts?.get(id)?.neverUsed ? p.idleOpacity : 1;

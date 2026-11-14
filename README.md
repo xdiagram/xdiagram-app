@@ -29,8 +29,8 @@ every change made on the canvas is an edit to it.
   - Editing re-renders the diagram. Errors show inline while the last valid diagram stays on screen.
 - **Edit on the canvas.** Every action below is one undo step (Ctrl+Z / Ctrl+Shift+Z), even with focus on the canvas.
   - Double-click a table header or a column to rename it.
-  - Right-click a table for header colour, add column, hide, browse or profile data, add to query,
-    sample data, reveal in editor and copy name.
+  - Right-click a table for header colour, add column, hide, show only it and its directly related
+    tables, browse or profile data, add to query, sample data, reveal in editor and copy name.
   - Right-click the background for a new table.
   - Drag from a column's connector dot to another table's column to add a `Ref`.
 - **Big schemas**:

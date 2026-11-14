@@ -656,6 +656,15 @@ export class WorkspaceStore {
     this.persist();
   }
 
+  /** Hides every table except those in `keep` (one undo step). */
+  showOnly(keep: ReadonlySet<string>, label: string): void {
+    const tables = this.view().tables;
+    this.recordLayout(label, () => this.hidden.set(new Set(tables.filter((t) => !keep.has(t.id)).map((t) => t.id))));
+    // The visible set no longer matches a saved DiagramView.
+    this.activeView.set(null);
+    this.persist();
+  }
+
   private persist(): void {
     if (!this.layoutKey) return;
     this.layouts.save(this.layoutKey, {

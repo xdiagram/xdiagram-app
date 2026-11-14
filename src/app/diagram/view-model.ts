@@ -86,6 +86,16 @@ export function refKey(from: VEndpoint, to: VEndpoint): string {
   return `${a}|${b}`;
 }
 
+/** `id` plus every table one relationship away from it, in either direction. */
+export function relatedTables(refs: readonly VRef[], id: string): Set<string> {
+  const near = new Set([id]);
+  for (const r of refs) {
+    if (r.from.table === id) near.add(r.to.table);
+    if (r.to.table === id) near.add(r.from.table);
+  }
+  return near;
+}
+
 export interface VGroup {
   id: string;
   name: string;

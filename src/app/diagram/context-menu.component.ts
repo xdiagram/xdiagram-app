@@ -25,6 +25,7 @@ export type CanvasMenuAction =
   | { kind: "profile" }
   | { kind: "query" }
   | { kind: "hide" }
+  | { kind: "isolate" }
   | { kind: "copy" }
   | { kind: "sample" }
   | { kind: "newTable" }
@@ -65,6 +66,7 @@ export type CanvasMenuAction =
       }
       <button type="button" role="menuitem" (click)="pick({ kind: 'reveal' })">Reveal in editor</button>
       <button type="button" role="menuitem" (click)="pick({ kind: 'hide' })">Hide from diagram</button>
+      <button type="button" role="menuitem" (click)="pick({ kind: 'isolate' })">Show only this &amp; related</button>
       <button type="button" role="menuitem" (click)="pick({ kind: 'copy' })">Copy name</button>
       <button type="button" role="menuitem" (click)="pick({ kind: 'sample' })">Generate sample data…</button>
     } @else {
