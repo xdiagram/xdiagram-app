@@ -54,6 +54,10 @@ every change made on the canvas is an edit to it.
   - **Filters** (see "Filtering rows" below): a bar of chips, a filter box per column, Filter by
     from any cell, AND/OR groups, operators that fit each column's type, periods such as "this week",
     and a count of the matching rows. Each table's filter and sort are remembered per database.
+    - Search all columns, with the matches highlighted, or type the whole filter as one line of
+      text with suggestions.
+    - Pick values from a list with their counts, or a referenced row by its name.
+    - Save named filters, copy the filter or the rows as SQL, and export the rows as CSV or JSON.
   - **Sorting:** click a header to sort, Shift+click to sort by several columns. The primary key is
     always added last, so pages never repeat or skip rows.
   - **Profile:** per-column statistics from a sample of up to 20,000 rows (random `TABLESAMPLE` on
@@ -66,7 +70,9 @@ every change made on the canvas is an edit to it.
   - **Query:** pick tables and they are joined along the shortest relationship path (declared
     relationships first, then X-ray's discovered ones). Bridge tables are added automatically, and
     the path is outlined on the diagram.
-    - Pick columns, filter, choose INNER or LEFT joins, and copy the SQL in the connection's dialect.
+    - Pick columns, choose INNER or LEFT joins, and copy the SQL in the connection's dialect.
+    - Filter with the same bar, text box and column boxes as the Rows view, on any joined table's
+      columns (`alias.column`). Opening Query from a filtered table starts from that table and filter.
     - Run it read-only, a page at a time. The query is built from a structured request: identifiers
       are checked against the catalog, and values are always parameters.
 - **Related data** (read-only, every engine): a map of one row and the rows linked to it, opened
@@ -186,6 +192,62 @@ box removes that column's filter):
 - Right-click a cell: **Filter by** that value (=, ≠, <, >, or is null).
 - Ctrl+click cells of one column, then right-click: **is one of** the picked values.
 - Right-click a header: sort, then by this column, Filter…, clear the column's filter.
+
+**Search all columns.** The box at the end of the bar finds rows where any column holds the text.
+Text, enum and JSON columns are matched with "contains". Number, date and UUID columns are matched
+exactly when the text is one of their values, so an index can help. Matches are highlighted in the
+grid, and so are the values of contains, starts with, ends with and = conditions in their column.
+
+**As text.** **Text** opens the whole filter as one line, for example
+`role = admin and (created_at: last 7 days or email ~ gmail)`.
+
+- Enter applies, Esc undoes the edit, and Ctrl+Space suggests columns, operators that fit the
+  column, values and periods.
+- A mistake is underlined where it is, with the reason, and nothing is applied.
+- The chips and the text are two views of the same filter. Switched-off chips are not in the text
+  and stay switched off.
+- An empty box offers the expressions used before in this database.
+
+| Write | Means |
+|---|---|
+| `col = v` `!=` `<` `<=` `>` `>=` | compare |
+| `col ~ v` `!~` `^=` `$=` | contains, does not contain, starts with, ends with (add `cs` for case-sensitive) |
+| `col matches v` | regular expression |
+| `col in (a, b)` `col not in (a, b)` | one of, none of |
+| `col between a and b` | between |
+| `col is null` `is not null` `is empty` `is blank` `is padded` | null, empty, only spaces, extra spaces |
+| `col: today` `this week` `last 30 days` `2026-11-14` | a period |
+| `any ~ v` | search all columns |
+| `not (…)` `and` `or` `( )` | combine (`and` binds tighter than `or`) |
+
+Values can be bare (`admin`, `42`, `-7d` for seven days ago) or quoted with `'…'` or `"…"`; column
+names that need it go in back quotes.
+
+**Picking values.** In the condition editor:
+
+- **Values** lists the column's values among the rows the rest of the filter matches, most frequent
+  first, with their counts.
+  - Click one to use it, or tick several for "is one of". NULL makes the condition "is null".
+  - A find box narrows the list; numbers and dates also show their smallest and largest value.
+  - It counts at most the first 200,000 matching rows and says so.
+- On a foreign-key column, a second button (for example **users**) lists the referenced table's rows
+  as key and name, to pick one by its name. The column shown as the name can be changed and is
+  remembered for that table.
+- Date columns have a calendar. A day picked for `=` on a timestamp means that whole day.
+
+**Saved filters.** **★ Saved** keeps named filters per table, conditions and sort together. The one
+matching what is shown is marked, and its tooltip spells it out. They are kept with the remembered
+filters of the database.
+
+**Copy and export.** **Copy / Export** offers:
+
+- **Copy the filter as text:** the line the text box shows.
+- **Copy the rows as SQL:** one SELECT with the filter's values written in, escaped for the engine,
+  ready to run in its own client.
+- **Export rows as CSV / JSON:** all matching rows (the first 50,000), sorted, with whole values
+  instead of the grid's shortened ones.
+  - CSV follows RFC 4180: NULL is an empty field, and an empty text is `""`.
+  - JSON is an array of objects.
 
 **How values are compared.** A value is converted to the column's type, never the column to text,
 so an index on the column can serve the filter.
