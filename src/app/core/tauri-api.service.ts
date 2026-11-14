@@ -327,6 +327,19 @@ export class TauriApi {
     return invoke("startup_notices");
   }
 
+  /** The edited DBML kept for a database (JSON written by `DraftService`), or null. */
+  loadDraft(key: string): Promise<string | null> {
+    return invoke("load_draft", { key });
+  }
+
+  saveDraft(key: string, contents: string): Promise<void> {
+    return invoke("save_draft", { key, contents });
+  }
+
+  deleteDraft(key: string): Promise<void> {
+    return invoke("delete_draft", { key });
+  }
+
   watchFile(path: string): Promise<void> {
     return invoke("watch_file", { path });
   }

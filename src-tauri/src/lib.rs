@@ -1,5 +1,6 @@
 mod commands;
 pub mod db;
+mod drafts;
 pub mod error;
 mod files;
 mod fsutil;
@@ -27,6 +28,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir().ok();
             let notices = data_dir.as_deref().map(|dir| fsutil::recover_json_files(dir, fsutil::STORE_FILES)).unwrap_or_default();
             app.manage(StartupNotices(std::sync::Mutex::new(notices)));
+            app.manage(drafts::Drafts::new(data_dir.as_ref().map(|dir| dir.join("drafts"))));
 
             let handle = app.handle().clone();
             let notify: files::Notify = std::sync::Arc::new(move |change| {
@@ -70,6 +72,9 @@ pub fn run() {
             commands::write_text_file,
             commands::can_write,
             commands::startup_notices,
+            commands::load_draft,
+            commands::save_draft,
+            commands::delete_draft,
             commands::watch_file,
             commands::unwatch_file,
         ])

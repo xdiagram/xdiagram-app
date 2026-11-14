@@ -17,6 +17,9 @@ import { ImportDialogComponent } from "./import/import-dialog.component";
 import { SampleDataDialogComponent } from "./sample/sample-data-dialog.component";
 import { SettingsDialogComponent } from "./settings/settings-dialog.component";
 import { AboutDialogComponent } from "./about/about-dialog.component";
+import { SchemaChangesDialogComponent } from "./changes/schema-changes-dialog.component";
+import { summarizeChanges } from "./state/schema-diff";
+import type { SchemaReport } from "./state/workspace.store";
 import { UpdateService } from "./core/update.service";
 import { TabStripComponent } from "./tabs/tab-strip.component";
 import { TabsStore } from "./state/tabs.store";
@@ -76,6 +79,7 @@ function writePref(key: string, value: string): void {
     SampleDataDialogComponent,
     SettingsDialogComponent,
     AboutDialogComponent,
+    SchemaChangesDialogComponent,
     TabStripComponent,
     RowGraphComponent,
   ],
@@ -99,6 +103,8 @@ export class AppComponent {
   protected readonly paletteOpen = signal(false);
   protected readonly settingsOpen = signal(false);
   protected readonly aboutOpen = signal(false);
+  /** The "Changes in <database>" dialog behind the schema-changes banner. */
+  protected readonly schemaDetailsOpen = signal(false);
   protected readonly updates = inject(UpdateService);
   /** Created at start so the chosen theme applies everywhere. */
   private readonly theme = inject(ThemeService);
@@ -134,6 +140,7 @@ export class AppComponent {
     cmd("close-tab", "Close tab", () => void this.tabs.close(this.tabs.activeId()), "Ctrl+W");
     cmd("import-paste", "Import SQL DDL (paste)…", () => this.store.importRequest.set({ text: "", path: null, name: "Pasted SQL" }), "Import");
     cmd("refresh", "Refresh from database", () => void this.store.refresh(), "Ctrl+R", db);
+    cmd("discard-db-edits", "Discard DBML edits (use the database schema)", () => void this.store.discardDbEdits(), "Database", db && this.store.dirty());
     cmd("xray", this.workload.enabled() ? "Turn off X-ray" : "Turn on X-ray", () => void this.workload.toggle(), "Ctrl+Shift+X", this.xrayAvailable());
     cmd("editor", this.store.editorOpen() ? "Hide DBML editor" : "Show DBML editor", () => this.toggleEditor(), "Panels");
     cmd("sidebar", this.sidebarOpen() ? "Hide side panel" : "Show side panel", () => this.toggleSidebar(), "Panels");
@@ -192,10 +199,13 @@ export class AppComponent {
     // New versions (checked shortly after start, when enabled and configured).
     void this.updates.init();
     // Unsaved edits are not lost by closing the window.
+    // Database tabs' DBML and the layouts are written out first (both are saved debounced).
     void getCurrentWindow().onCloseRequested(async (event) => {
-      if (!this.tabs.anyDirty()) return;
-      const ok = await ask("Some tabs have unsaved changes. Close xdiagram anyway?", { title: "Unsaved changes", kind: "warning" });
-      if (!ok) event.preventDefault();
+      if (this.tabs.anyUnsaved()) {
+        const ok = await ask("Some tabs have unsaved changes. Close xdiagram anyway?", { title: "Unsaved changes", kind: "warning" });
+        if (!ok) return event.preventDefault();
+      }
+      await this.store.flushPending();
     });
     // A restored tab needs a password: open the connect dialog on its profile.
     effect(() => {
@@ -225,13 +235,14 @@ export class AppComponent {
 
   /** Installing restarts the app: edits not saved yet would be lost. */
   protected async installUpdate(): Promise<void> {
-    if (this.tabs.anyDirty()) {
+    if (this.tabs.anyUnsaved()) {
       const ok = await ask("Some tabs have unsaved changes, which will be lost when xdiagram restarts. Install the update anyway?", {
         title: "Install update",
         kind: "warning",
       });
       if (!ok) return;
     }
+    await this.store.flushPending();
     await this.updates.install();
   }
 
@@ -301,7 +312,16 @@ export class AppComponent {
   }
 
   /** Reveals a table (un-hiding it if needed), optionally flashing one of its columns. */
-  private goTo(tableId: string, field?: string): void {
+  /** The schema-changes banner's text. */
+  protected schemaBanner(r: SchemaReport): string {
+    const summary = r.changes ? summarizeChanges(r.changes) : "";
+    const changed = summary ? `${r.label} changed since it was last read: ${summary}.` : `${r.label} changed since it was last read.`;
+    const n = r.conflicts.length;
+    if (!n) return `${changed} Your DBML edits were kept.`;
+    return `${changed} ${n} of your edits clashed with these changes; the database's version was kept.`;
+  }
+
+  protected goTo(tableId: string, field?: string): void {
     if (this.store.hidden().has(tableId)) this.store.toggleHidden(tableId);
     setTimeout(() => {
       if (field) this.store.diagram?.flashField(tableId, field);
@@ -323,6 +343,7 @@ export class AppComponent {
       this.settingsOpen() ||
       this.aboutOpen() ||
       this.connectOpen() ||
+      this.schemaDetailsOpen() ||
       !!this.store.importRequest() ||
       !!this.store.sampleDataFor()
     );

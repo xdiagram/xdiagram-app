@@ -97,6 +97,7 @@ export class AboutDialogComponent {
     { name: "Monaco Editor", license: "MIT" },
     { name: "Konva", license: "MIT" },
     { name: "ELK (elkjs)", license: "EPL-2.0" },
+    { name: "node-diff3", license: "MIT" },
     { name: "tokio-postgres, mysql_async, tiberius, rusqlite", license: "MIT / Apache-2.0" },
     { name: "russh", license: "Apache-2.0" },
     { name: "rustls", license: "Apache-2.0 / ISC / MIT" },

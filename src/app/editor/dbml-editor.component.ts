@@ -32,7 +32,10 @@ type Monaco = typeof MonacoNs;
     <div class="head">
       <span class="title">DBML</span>
       @if (store.dirty()) {
-        <span class="badge" title="The DBML was edited after it was loaded">edited</span>
+        <span class="badge"
+          [title]="store.source()?.kind === 'db'
+            ? 'Edited: your DBML is kept for this database and merged with its changes on Refresh'
+            : 'The DBML was edited after it was loaded'">edited</span>
       }
     </div>
     <div #host class="host"></div>

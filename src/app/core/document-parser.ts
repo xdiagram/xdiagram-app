@@ -46,6 +46,12 @@ export class DocumentParser {
     return r.kind === "completed" ? (r.list ?? { suggestions: [] }) : { suggestions: [] };
   }
 
+  /** Diagram models of other documents (null where one does not parse); the open document is untouched. */
+  async views(texts: string[]): Promise<(ViewModel | null)[]> {
+    const r = await this.send({ kind: "views", id: ++this.seq, texts });
+    return r.kind === "viewed" ? r.views : texts.map(() => null);
+  }
+
   /** Lints the last document that parsed. */
   async lint(rules: RuleId[]): Promise<LintFinding[]> {
     const r = await this.send({ kind: "lint", id: ++this.seq, rules });
@@ -100,6 +106,16 @@ export class DocumentParser {
       return { kind: "linted", id: req.id, findings, ms: 0 };
     }
     const { Parser } = await loadDbmlCore();
+    if (req.kind === "views") {
+      const views = req.texts.map((text) => {
+        try {
+          return buildViewModel(Parser.parse(text, "dbmlv2"));
+        } catch {
+          return null;
+        }
+      });
+      return { kind: "viewed", id: req.id, views, ms: 0 };
+    }
     try {
       const db = Parser.parse(req.text, "dbmlv2");
       const view = buildViewModel(db);

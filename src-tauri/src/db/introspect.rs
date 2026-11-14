@@ -296,7 +296,7 @@ fn refs_sql() -> String {
     GROUP BY
       source_ns.nspname, source_table.relname, constraint_row.conname,
       target_ns.nspname, target_table.relname, constraint_row.confdeltype, constraint_row.confupdtype
-    ORDER BY source_ns.nspname, source_table.relname
+    ORDER BY source_ns.nspname, source_table.relname, constraint_row.conname
     "#,
         filter = schema_filter("source_ns.nspname"),
     )

@@ -104,7 +104,8 @@ export class TabsStore {
   readonly views = computed<TabView[]>(() => {
     const active = this.activeId();
     const liveSource = this.workspace.source();
-    const liveDirty = this.workspace.dirty();
+    // Only edits that would be lost count: a database tab's edits are kept for that database.
+    const liveDirty = this.workspace.needsSave();
     return this.tabs().map((t) => {
       const isActive = t.id === active;
       const source = isActive ? liveSource : (t.snapshot?.source ?? null);
@@ -117,7 +118,7 @@ export class TabsStore {
         label,
         kind,
         detail: source?.detail ?? (t.pending ? (isActive ? "Click to open it" : "Opens when you switch to it") : "Empty"),
-        dirty: isActive ? liveDirty : !!t.snapshot && t.snapshot.dbml !== t.snapshot.baseline,
+        dirty: isActive ? liveDirty : !!t.snapshot && t.snapshot.source?.kind !== "db" && t.snapshot.dbml !== t.snapshot.baseline,
         active: isActive,
         pending,
       };
@@ -164,14 +165,16 @@ export class TabsStore {
       this.workspace.restore(null);
       return;
     }
-    const existing = key ? this.tabs().find((t) => t.id !== this.activeId() && t.snapshot && sourceKey(t.snapshot.source) === key && t.snapshot.dbml === t.snapshot.baseline) : undefined;
+    // A database tab is reused even when edited: its edits are kept for the database and merged back in.
+    const reusable = (s: DocSnapshot) => s.dbml === s.baseline || s.source?.kind === "db";
+    const existing = key ? this.tabs().find((t) => t.id !== this.activeId() && t.snapshot && sourceKey(t.snapshot.source) === key && reusable(t.snapshot)) : undefined;
     if (existing) {
       this.stash();
       this.activeId.set(existing.id);
       this.tabs.update((ts) => ts.map((t) => (t.id === existing.id ? { ...t, snapshot: null } : t)));
       return;
     }
-    if (key && sourceKey(this.workspace.source()) === key && !this.workspace.dirty()) return; // reopening what is shown
+    if (key && sourceKey(this.workspace.source()) === key && !this.workspace.needsSave()) return; // reopening what is shown
     this.stash();
     const tab: Tab = { id: newId(), snapshot: null, pending: null };
     this.tabs.update((ts) => [...ts, tab]);
@@ -244,8 +247,8 @@ export class TabsStore {
     this.tabs.update((list) => list.filter((t) => t.id !== id));
   }
 
-  /** Any tab with unsaved edits (asked about before the window closes). */
-  anyDirty(): boolean {
+  /** Any tab with edits that closing would lose (asked about before the window closes). */
+  anyUnsaved(): boolean {
     return this.views().some((v) => v.dirty);
   }
 

@@ -239,6 +239,22 @@ pub fn can_write(files: tauri::State<'_, FileState>, path: String) -> bool {
     files.can_write(std::path::Path::new(&path))
 }
 
+/// The edited DBML kept for a database (see `drafts.rs`), or `None`.
+#[tauri::command]
+pub async fn load_draft(drafts: tauri::State<'_, crate::drafts::Drafts>, key: String) -> Result<Option<String>, AppError> {
+    drafts.load(&key)
+}
+
+#[tauri::command]
+pub async fn save_draft(drafts: tauri::State<'_, crate::drafts::Drafts>, key: String, contents: String) -> Result<(), AppError> {
+    drafts.save(&key, &contents)
+}
+
+#[tauri::command]
+pub async fn delete_draft(drafts: tauri::State<'_, crate::drafts::Drafts>, key: String) -> Result<(), AppError> {
+    drafts.delete(&key)
+}
+
 /// Messages about app files that were damaged and restored at start-up (each is reported once).
 #[tauri::command]
 pub fn startup_notices(notices: tauri::State<'_, crate::StartupNotices>) -> Vec<String> {

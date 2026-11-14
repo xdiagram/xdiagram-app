@@ -1,4 +1,4 @@
-import { Injectable, computed, inject, signal } from "@angular/core";
+import { Injectable, computed, effect, inject, signal, untracked } from "@angular/core";
 import type { Database } from "@dbml/core";
 import { ask } from "@tauri-apps/plugin-dialog";
 
@@ -12,7 +12,10 @@ import { layoutTables, prewarmLayout } from "../diagram/layout";
 import { EMPTY_VIEW, type ViewModel } from "../diagram/view-model";
 import { timed, timedAsync } from "../core/perf";
 import { LayoutService, type Point, type Viewport } from "../persistence/layout.service";
+import { DraftService } from "../persistence/draft.service";
+import { type MergeConflict, mergeDbml } from "../editor/merge";
 import { CanvasHistory, type HistoryEntry, type LayoutState } from "./canvas-history";
+import { type SchemaChanges, diffSchemas, isEmptyChange } from "./schema-diff";
 import type { Engine } from "../core/tauri-api.service";
 import {
   ConnectionProfile,
@@ -52,6 +55,16 @@ export function sourceKey(source: Source | null | undefined): string | null {
 /** The path of an open .dbml file (saved in place and watched), or null. */
 export function watchablePath(source: Source | null | undefined): string | null {
   return source?.kind === "file" && source.path && !source.dialect && /\.(dbml|txt)$/i.test(source.path) ? source.path : null;
+}
+
+/** What changed in a database since its tab last read it, and edits of the user's that clashed. */
+export interface SchemaReport {
+  /** The database, as its tab names it. */
+  label: string;
+  /** Null when one of the two schemas could not be read back for comparison. */
+  changes: SchemaChanges | null;
+  /** Lines both the user and the database changed: the database's version was kept. */
+  conflicts: MergeConflict[];
 }
 
 /** A SQL/schema.rb script waiting in the import dialog (`path` is null for pasted text). */
@@ -103,6 +116,7 @@ export class WorkspaceStore {
   private readonly layouts = inject(LayoutService);
   private readonly profiles = inject(ProfilesService);
   private readonly parser = inject(DocumentParser);
+  private readonly drafts = inject(DraftService);
 
   readonly source = signal<Source | null>(null);
   readonly dbml = signal("");
@@ -128,9 +142,19 @@ export class WorkspaceStore {
   readonly documentVersion = signal(0);
   /** Tables without a position are being laid out (the diagram waits for them). */
   readonly layingOut = signal(false);
-  /** The text as loaded or last saved; the document has unsaved edits when it differs. */
+  /**
+   * The text as loaded or last saved; the document has edits when it differs. On a database tab
+   * it is the DBML the database gave when last read.
+   */
   readonly baseline = signal("");
   readonly dirty = computed(() => this.dbml() !== this.baseline());
+  /**
+   * Edits that would be lost on close. A database tab's edits never are: they are kept for that
+   * database (see `DraftService`) and come back on the next connection.
+   */
+  readonly needsSave = computed(() => this.dirty() && this.source()?.kind !== "db");
+  /** Shown as a banner after a database tab was opened or refreshed and its schema had changed. */
+  readonly schemaChanges = signal<SchemaReport | null>(null);
   readonly busy = signal<string | null>(null);
   /** Operation id of the running cancellable task (see `cancelBusy`). */
   readonly busyOp = signal<string | null>(null);
@@ -178,6 +202,20 @@ export class WorkspaceStore {
   constructor() {
     // ELK loads in its worker while the app is idle, so the first diagram does not wait for it.
     setTimeout(prewarmLayout, 1500);
+    // A database tab's DBML is kept for that database as it changes (debounced in the service).
+    effect(() => {
+      const source = this.source();
+      const dbml = this.dbml();
+      const baseline = this.baseline();
+      untracked(() => {
+        if (source?.kind === "db" && this.layoutKey && baseline) this.drafts.save(this.layoutKey, { baseline, dbml });
+      });
+    });
+  }
+
+  /** Writes the debounced saves (database tabs' DBML, layouts) now: before closing or restarting. */
+  async flushPending(): Promise<void> {
+    await Promise.all([this.drafts.flush(), this.layouts.flush()]);
   }
 
   // ------------------------------------------------------------------ opening documents
@@ -193,13 +231,24 @@ export class WorkspaceStore {
         this.sessionSshSecrets.set(profile.id, sshSecret);
         if (rememberPassword) await this.api.savePassword(sshSecretId(profile.id), sshSecret, toConnectionInput(profile));
       }
-      const dbml = await this.fetchDbml(profile, op);
-      await this.openDocument(dbml, this.dbSource(profile), layoutKeyOf(profile));
-      this.flash(`Loaded ${this.view().tables.length} tables from ${profileLabel(profile)}`);
+      const fresh = await this.fetchDbml(profile, op);
+      // The user's DBML for this database comes back, with what changed in the database since merged in.
+      const key = layoutKeyOf(profile);
+      const draft = await this.drafts.load(key);
+      const merged = draft ? mergeDbml(draft.baseline, draft.dbml, fresh) : { text: fresh, conflicts: [] };
+      await this.openDocument(merged.text, this.dbSource(profile), key, fresh);
+      const kept = merged.text !== fresh ? " (with your DBML edits)" : "";
+      this.flash(`Loaded ${this.view().tables.length} tables from ${profileLabel(profile)}${kept}`);
+      if (draft && draft.baseline !== fresh) void this.reportSchemaChanges(draft.baseline, fresh, merged.conflicts, profileLabel(profile));
     });
   }
 
-  /** Re-reads the schema of the current database, keeping table positions. */
+  /**
+   * Re-reads the schema of the current database, keeping table positions and the user's DBML
+   * edits: what changed in the database is merged into the edited text (three-way, with the
+   * last read as the base). Where both changed the same lines, the database wins and the banner
+   * lists the user's lines.
+   */
   async refresh(): Promise<void> {
     const src = this.source();
     if (src?.kind !== "db") return;
@@ -209,22 +258,46 @@ export class WorkspaceStore {
       this.error.set("The connection profile for this diagram no longer exists.");
       return;
     }
-    if (this.dirty()) {
-      const ok = await ask("Reloading from the database replaces your edits to the DBML. Continue?", {
-        title: "Refresh from database",
-        kind: "warning",
-      });
-      if (!ok) return;
-    }
     await this.run("Refreshing schema…", async (op) => {
-      const dbml = await this.fetchDbml(profile, op);
+      const fresh = await this.fetchDbml(profile, op);
       this.source.set(this.dbSource(profile));
-      this.dbml.set(dbml);
-      this.baseline.set(dbml);
+      const base = this.baseline();
+      if (fresh === base) {
+        this.flash("No changes in the database");
+        return;
+      }
+      const merged = mergeDbml(base, this.dbml(), fresh);
+      this.dbml.set(merged.text);
+      this.baseline.set(fresh);
+      // The editor takes the new text whole (its undo stack starts over), so canvas undo does too.
+      this.history.clear();
       await this.parseNow();
       await this.ensureLayout();
       this.flash("Schema refreshed");
+      void this.reportSchemaChanges(base, fresh, merged.conflicts, profileLabel(profile));
     });
+  }
+
+  /** Compares two reads of the database for the banner (in the parse worker, off the main thread). */
+  private async reportSchemaChanges(before: string, after: string, conflicts: MergeConflict[], label: string): Promise<void> {
+    const key = this.layoutKey;
+    const [a, b] = await this.parser.views([before, after]);
+    const changes = a && b ? diffSchemas(a, b) : null;
+    if (key !== this.layoutKey) return; // another document was opened meanwhile
+    if (changes && isEmptyChange(changes) && !conflicts.length) return;
+    this.schemaChanges.set({ label, changes, conflicts });
+  }
+
+  /** Puts this database tab back to the schema as last read (one undoable step). */
+  async discardDbEdits(): Promise<void> {
+    if (this.source()?.kind !== "db" || !this.dirty()) return;
+    const ok = await ask("Replace your edits to this database's DBML with the schema as last read from the database? Ctrl+Z brings them back.", {
+      title: "Discard DBML edits",
+      kind: "warning",
+    });
+    if (!ok) return;
+    this.applyDbmlEdit(this.baseline(), "Discard DBML edits");
+    this.flash("DBML reset to the database schema");
   }
 
   async openFile(): Promise<void> {
@@ -275,10 +348,12 @@ export class WorkspaceStore {
     };
   }
 
-  private async openDocument(dbml: string, source: Source, layoutKey: string): Promise<void> {
+  /** `baseline`: the unedited text (on a database tab, the DBML the database gave). */
+  private async openDocument(dbml: string, source: Source, layoutKey: string, baseline = dbml): Promise<void> {
     this.tabHost?.beforeOpen(sourceKey(source));
     this.externalChange.set(null);
-    await this.layouts.flush();
+    this.schemaChanges.set(null);
+    await Promise.all([this.layouts.flush(), this.drafts.flush()]);
     const saved = await this.layouts.load(layoutKey);
     this.layoutKey = layoutKey;
     this.source.set(source);
@@ -289,7 +364,7 @@ export class WorkspaceStore {
     this.viewport = saved?.viewport ?? null;
     this.initialViewport.set(this.viewport);
     this.dbml.set(dbml);
-    this.baseline.set(dbml);
+    this.baseline.set(baseline);
     this.history.clear();
     await this.parseNow();
     await this.ensureLayout();
@@ -316,8 +391,10 @@ export class WorkspaceStore {
   /** Shows a tab's document (`null`: an empty tab). */
   restore(s: DocSnapshot | null): void {
     void this.layouts.flush();
+    void this.drafts.flush();
     if (this.parseTimer) clearTimeout(this.parseTimer);
     this.externalChange.set(null);
+    this.schemaChanges.set(null);
     this.source.set(s?.source ?? null);
     this.layoutKey = s?.layoutKey ?? null;
     this.positions.set(s?.positions ?? {});

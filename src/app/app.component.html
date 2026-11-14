@@ -144,6 +144,14 @@
   </div>
 }
 
+@if (store.schemaChanges(); as report) {
+  <div class="banner" [class.info]="!report.conflicts.length" [class.warn]="report.conflicts.length" role="status">
+    <span>{{ schemaBanner(report) }}</span>
+    <button type="button" class="text-btn" (click)="schemaDetailsOpen.set(true)">Details</button>
+    <button type="button" (click)="store.schemaChanges.set(null); schemaDetailsOpen.set(false)" aria-label="Dismiss">×</button>
+  </div>
+}
+
 @if (store.error() ?? workload.error(); as err) {
   <div class="banner" role="alert">
     <span>{{ err }}</span>
@@ -222,6 +230,11 @@
 
 @if (aboutOpen()) {
   <app-about-dialog (closed)="aboutOpen.set(false)" />
+}
+
+@if (schemaDetailsOpen() && store.schemaChanges(); as report) {
+  <app-schema-changes-dialog [report]="report" (closed)="schemaDetailsOpen.set(false)"
+    (table)="schemaDetailsOpen.set(false); goTo($event)" />
 }
 
 @if (connectOpen()) {

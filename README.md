@@ -87,6 +87,14 @@ every change made on the canvas is an edit to it.
   - Findings link to the table and the editor line, and tables get a badge on the diagram.
   - Each rule can be turned off.
 - **Per database / file**: table positions, hidden tables, viewport and detail level are remembered.
+- **Your DBML on a database tab is kept.** Header colours, saved views, groups, notes and refs
+  you add stay with that database, also after closing the tab or the app (there is nothing to
+  save). On **Refresh**, or the next time you connect, what changed in the database is merged
+  into your text (three-way, line by line, against the schema as last read). A banner then says
+  what changed, with a **Details** list (tables, columns, relationships; indexes are not compared).
+  Where you and the database changed the same lines, the database's version is kept and Details
+  shows your lines so you can copy them back. **Discard DBML edits** (palette) goes back to the
+  database's schema.
 - **Export**:
   - PNG, SVG or `.dbml`.
   - **SQL DDL** for PostgreSQL, MySQL, SQL Server or Oracle (see below).

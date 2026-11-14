@@ -333,7 +333,7 @@ pub async fn fetch_schema_json(conn: &mut Conn) -> Result<DatabaseSchema, AppErr
                on rc.constraint_name = kcu.constraint_name and rc.table_name = kcu.table_name and rc.constraint_schema = kcu.table_schema
              where rc.constraint_schema = ?
              group by rc.constraint_name, rc.table_name, kcu.referenced_table_name, rc.update_rule, rc.delete_rule
-             order by rc.table_name",
+             order by rc.table_name, rc.constraint_name",
             (&db,),
         )
         .await?;

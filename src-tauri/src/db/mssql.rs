@@ -234,11 +234,11 @@ pub async fn fetch_schema_json(client: &mut MsClient, schemas: &[String]) -> Res
         SELECT s.name, t.name, fk.name,
           STUFF((SELECT ',' + c1.name FROM sys.foreign_key_columns AS fkc
                  JOIN sys.columns AS c1 ON fkc.parent_object_id = c1.object_id AND fkc.parent_column_id = c1.column_id
-                 WHERE fkc.constraint_object_id = fk.object_id FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 1, ''),
+                 WHERE fkc.constraint_object_id = fk.object_id ORDER BY fkc.constraint_column_id FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 1, ''),
           s2.name, t2.name,
           STUFF((SELECT ',' + c2.name FROM sys.foreign_key_columns AS fkc
                  JOIN sys.columns AS c2 ON fkc.referenced_object_id = c2.object_id AND fkc.referenced_column_id = c2.column_id
-                 WHERE fkc.constraint_object_id = fk.object_id FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 1, ''),
+                 WHERE fkc.constraint_object_id = fk.object_id ORDER BY fkc.constraint_column_id FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 1, ''),
           fk.delete_referential_action_desc, fk.update_referential_action_desc
         FROM sys.foreign_keys AS fk
         JOIN sys.tables AS t ON fk.parent_object_id = t.object_id
@@ -246,7 +246,7 @@ pub async fn fetch_schema_json(client: &mut MsClient, schemas: &[String]) -> Res
         JOIN sys.tables AS t2 ON fk.referenced_object_id = t2.object_id
         JOIN sys.schemas AS s2 ON t2.schema_id = s2.schema_id
         WHERE s.name NOT IN ('sys', 'information_schema') {filter}
-        ORDER BY s.name, t.name
+        ORDER BY s.name, t.name, fk.name
         "#,
         filter = schema_filter("s.name", schemas)
     );

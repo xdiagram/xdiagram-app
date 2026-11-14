@@ -15,7 +15,9 @@ export type ParseRequest =
   /** Lint the last successfully parsed document. */
   | { kind: "lint"; id: number; rules: RuleId[] }
   /** Editor completion at a position (1-based line and column). */
-  | { kind: "complete"; id: number; text: string; position: { lineNumber: number; column: number } };
+  | { kind: "complete"; id: number; text: string; position: { lineNumber: number; column: number } }
+  /** Parse other documents (e.g. two reads of a database, to compare them) without touching the current one. */
+  | { kind: "views"; id: number; texts: string[] };
 
 export type ParseResponse =
   | { kind: "parsed"; id: number; ok: true; view: ViewModel; ms: number }
@@ -23,4 +25,6 @@ export type ParseResponse =
   /** A newer request of the same kind arrived before this one was handled: it was skipped. */
   | { kind: "skipped"; id: number }
   | { kind: "linted"; id: number; findings: LintFinding[]; ms: number }
-  | { kind: "completed"; id: number; list: CompletionListData | null; ms: number };
+  | { kind: "completed"; id: number; list: CompletionListData | null; ms: number }
+  /** One entry per text: its diagram model, or null when it does not parse. */
+  | { kind: "viewed"; id: number; views: (ViewModel | null)[]; ms: number };
