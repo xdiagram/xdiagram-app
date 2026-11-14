@@ -1,13 +1,25 @@
 import { Injectable, computed, effect, inject, signal, untracked } from "@angular/core";
 
-import { BrowseColumn, BrowseFilter, BrowseResult, ColKind, Engine, FilterIssue, TableProfile, TauriApi, errorMessage, filterIssues } from "../core/tauri-api.service";
+import {
+  BrowseColumn,
+  BrowseFilter,
+  BrowseResult,
+  ColKind,
+  Engine,
+  FilterIssue,
+  TableProfile,
+  TauriApi,
+  ValuesResult,
+  errorMessage,
+  filterIssues,
+} from "../core/tauri-api.service";
 import { splitTableId } from "../diagram/canvas-edit";
 import type { VRef } from "../diagram/view-model";
 import { kindOf } from "../filter/kinds";
 import { type FilterNode, type GroupNode, LIMITS, type SortKey, type WireNode } from "../filter/model";
 import { parseQuick } from "../filter/quick-syntax";
 import { rememberExpression, rememberTable } from "../filter/memory";
-import { addNode, emptyRoot, fromEquality, hasActive, setColumnFilter, toggleOff, withoutNav } from "../filter/tree";
+import { addNode, emptyRoot, fromEquality, hasActive, removeNode, setColumnFilter, toggleOff, withoutNav } from "../filter/tree";
 import { treeIssues } from "../filter/validate";
 import { toWire, wireKey } from "../filter/wire";
 import { FilterMemoryService } from "../persistence/filter-memory.service";
@@ -115,6 +127,7 @@ export class BrowserStore {
         this.profiles.set(new Map());
         this.tableColumns.set(new Map());
         this.counts.clear();
+        this.valueCache.clear();
         this.expressionHistory.set([]);
       });
     });
@@ -175,6 +188,43 @@ export class BrowserStore {
     const ci = r?.columns.findIndex((c) => c.name === column) ?? -1;
     const fromPage = r && ci >= 0 ? r.rows.map((row) => row[ci]).filter((v): v is string => v !== null && v.length <= 80) : [];
     return [...new Set([...fromProfile, ...fromPage])].slice(0, 40);
+  }
+
+  private readonly valueCache = new Map<string, Promise<ValuesResult>>();
+  private valuesOp: string | null = null;
+
+  /**
+   * A column's values with their counts among the rows the current filter matches, leaving out
+   * the condition `exclude` (the one being edited, so its own value does not narrow the list).
+   * Cached per filter until Reload; a newer request cancels the running one.
+   */
+  async valueCounts(column: string, search = "", exclude: string | null = null): Promise<ValuesResult> {
+    const loc = this.current();
+    const conn = await this.workspace.currentConnection();
+    if (!loc || !conn) throw new Error("Not connected");
+    const where = exclude ? removeNode(loc.where, exclude) : loc.where;
+    const filter = toWire(where, new Date(), (c) => this.kindIn(loc.tableId, c) ?? "timestamp");
+    const key = [loc.tableId, column, search, wireKey(filter)].join("\u0000");
+    const cached = this.valueCache.get(key);
+    if (cached) return cached;
+    if (this.valuesOp) void this.api.cancelOp(this.valuesOp);
+    const op = crypto.randomUUID();
+    this.valuesOp = op;
+    this.running.add(op);
+    const { schema, table } = splitTableId(loc.tableId);
+    // A picker should answer quickly: a few seconds at most, whatever the query time limit.
+    const timeoutSecs = Math.min(this.settings.settings().queryTimeoutSecs, 5);
+    const result = this.api.valueCounts(conn.input, { schema, table, column, filter, search: search || undefined, limit: 50, timeoutSecs }, op).finally(() => {
+      this.running.delete(op);
+      if (this.valuesOp === op) this.valuesOp = null;
+    });
+    this.valueCache.set(key, result);
+    // Failures, cancellations and timeouts are asked again next time.
+    result.then(
+      (r) => r.timedOut && this.valueCache.delete(key),
+      () => this.valueCache.delete(key),
+    );
+    return result;
   }
 
   /** Keeps the current table's filter and sort for next time (not the FK-navigation conditions). */
@@ -240,6 +290,7 @@ export class BrowserStore {
     if (this.mode() === "profile" && id) void this.loadProfile(id, true);
     else {
       this.counts.clear();
+      this.valueCache.clear();
       void this.load();
     }
   }

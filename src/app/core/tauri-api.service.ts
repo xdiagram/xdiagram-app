@@ -212,6 +212,40 @@ export interface CountResult {
   elapsedMs: number;
 }
 
+export interface ValuesRequest {
+  schema: string;
+  table: string;
+  column: string;
+  filter: WireNode | null;
+  /** Only values holding this text. */
+  search?: string;
+  limit?: number;
+  timeoutSecs?: number;
+}
+
+export interface ValueCount {
+  /** As the grid shows it; null is NULL. */
+  value: string | null;
+  count: number;
+  /** Shortened: too long to filter by. */
+  cut?: boolean;
+}
+
+/** See `values.rs`. */
+export interface ValuesResult {
+  values: ValueCount[];
+  /** More distinct values exist than listed. */
+  more: boolean;
+  /** Rows looked at. */
+  rows: number;
+  /** Only the first matching rows were looked at. */
+  sampled: boolean;
+  min: string | null;
+  max: string | null;
+  timedOut: boolean;
+  elapsedMs: number;
+}
+
 /** Statistics of one column over a table sample (see `profile.rs`). */
 export interface ColumnProfile {
   name: string;
@@ -433,6 +467,11 @@ export class TauriApi {
   /** How many rows match a browse request's filter, counted up to `cap` (time-limited). */
   countRows(input: ConnectionInput, request: { request: BrowseRequest; cap?: number }, opId?: string): Promise<CountResult> {
     return this.db("count_rows", { input, request, opId });
+  }
+
+  /** A column's values with their counts among the matching rows (sampled, read-only). */
+  valueCounts(input: ConnectionInput, request: ValuesRequest, opId?: string): Promise<ValuesResult> {
+    return this.db("value_counts", { input, request, opId });
   }
 
   /** A batch of key lookups on one connection (read-only), for the related-data map. */

@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, input, output } from "@angular/core";
+import { ChangeDetectionStrategy, Component, computed, input, output, signal } from "@angular/core";
 
 import type { BrowseColumn, ColKind, Engine } from "../../core/tauri-api.service";
 import { isDateKind, kindOf } from "../../filter/kinds";
@@ -6,6 +6,7 @@ import { type Arg, type CondNode, type Op, SEARCH_COLUMN, type Span } from "../.
 import { opInfo, opsFor } from "../../filter/operators";
 import { parsePoint, printPoint } from "../../filter/relative-dates";
 import { treeIssues } from "../../filter/validate";
+import { type ValueSource, ValuePickerComponent } from "./value-picker.component";
 
 const PERIODS: { value: string; label: string }[] = [
   { value: "today", label: "today" },
@@ -20,6 +21,7 @@ const PERIODS: { value: string; label: string }[] = [
 /** Edits one condition: column, operator (fitted to the column's kind) and value inputs. */
 @Component({
   selector: "app-condition-row",
+  imports: [ValuePickerComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <select class="col" [value]="node().column" (change)="setColumn($any($event.target).value)" aria-label="Column">
@@ -63,19 +65,35 @@ const PERIODS: { value: string; label: string }[] = [
         } @else {
           <input class="val" [value]="argText(0)" [placeholder]="placeholder()" spellcheck="false" (input)="setArg(0, $any($event.target).value)"
             (keydown.enter)="submit.emit()" aria-label="Value" />
+          @if (dateKind()) {
+            <span class="cal"><input #cal0 type="date" tabindex="-1" aria-hidden="true" (change)="pickDate(0, $any($event.target).value)" /><button
+              type="button" (click)="openCal(cal0)" title="Pick a day" aria-label="Pick a day">{{ calIcon }}</button></span>
+          }
         }
       }
       @case ("two") {
         <input class="val" [value]="argText(0)" [placeholder]="placeholder()" spellcheck="false" (input)="setArg(0, $any($event.target).value)"
           (keydown.enter)="submit.emit()" aria-label="From" />
+        @if (dateKind()) {
+          <span class="cal"><input #calFrom type="date" tabindex="-1" aria-hidden="true" (change)="pickDate(0, $any($event.target).value)" /><button
+            type="button" (click)="openCal(calFrom)" title="Pick the first day" aria-label="Pick the first day">{{ calIcon }}</button></span>
+        }
         <span class="and">and</span>
         <input class="val" [value]="argText(1)" [placeholder]="placeholder()" spellcheck="false" (input)="setArg(1, $any($event.target).value)"
           (keydown.enter)="submit.emit()" aria-label="To" />
+        @if (dateKind()) {
+          <span class="cal"><input #calTo type="date" tabindex="-1" aria-hidden="true" (change)="pickDate(1, $any($event.target).value)" /><button
+            type="button" (click)="openCal(calTo)" title="Pick the last day" aria-label="Pick the last day">{{ calIcon }}</button></span>
+        }
       }
       @case ("list") {
         <textarea class="list" rows="3" spellcheck="false" [value]="listText()" (input)="setList($any($event.target).value)"
           placeholder="one value per line" aria-label="Values"></textarea>
       }
+    }
+    @if (canPick()) {
+      <button type="button" class="pick" [class.on]="pickerOpen()" [attr.aria-expanded]="pickerOpen()" (click)="pickerOpen.set(!pickerOpen())"
+        title="Pick from this column's values, with how often each occurs among the matching rows">▾ Values</button>
     }
     @if (textMatch()) {
       <label class="cs" title="Match upper and lower case exactly">
@@ -84,6 +102,10 @@ const PERIODS: { value: string; label: string }[] = [
     }
     @if (message(); as m) {
       <div class="msg">{{ m }}</div>
+    }
+    @if (pickerOpen() && canPick()) {
+      <app-value-picker class="picker" [source]="values()!" [column]="node().column" [exclude]="node().id" [enumValues]="enumValues()"
+        [multi]="shape() === 'list'" [selected]="stringArgs()" (pick)="pickValue($event)" (pickNull)="pickNull()" (closed)="pickerOpen.set(false)" />
     }
   `,
   styles: `
@@ -98,6 +120,15 @@ const PERIODS: { value: string; label: string }[] = [
     .and { color: var(--text-muted); }
     .cs { display: flex; align-items: center; gap: 3px; color: var(--text-muted); cursor: pointer; }
     .msg { flex-basis: 100%; color: var(--danger); font-size: 11.5px; }
+    .pick { font: inherit; font-size: 11.5px; border: 1px solid var(--border); background: none; color: var(--text-muted); border-radius: 5px;
+      padding: 3px 7px; cursor: pointer; }
+    .pick.on, .pick:hover { color: var(--accent); border-color: var(--accent); }
+    .cal { position: relative; display: inline-flex; }
+    .cal input { position: absolute; left: 0; bottom: 0; width: 0; height: 0; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+    .cal button { font: inherit; font-size: 12px; border: 1px solid var(--border); background: none; color: var(--text-muted); border-radius: 5px;
+      padding: 2px 6px; cursor: pointer; line-height: 1.2; }
+    .cal button:hover { color: var(--accent); border-color: var(--accent); }
+    .picker { flex-basis: 100%; }
   `,
 })
 export class ConditionRowComponent {
@@ -106,12 +137,16 @@ export class ConditionRowComponent {
   readonly node = input.required<CondNode>();
   /** A problem Rust reported for this condition. */
   readonly issue = input<string | null>(null);
+  /** Where the value picker gets a column's values (none: no picker). */
+  readonly values = input<ValueSource | null>(null);
   readonly changed = output<CondNode>();
   /** Enter in a value box. */
   readonly submit = output<void>();
 
   protected readonly periods = PERIODS;
   protected readonly anyColumn = SEARCH_COLUMN;
+  protected readonly calIcon = "▦";
+  protected readonly pickerOpen = signal(false);
 
   private readonly column = computed(() => this.columns().find((c) => c.name === this.node().column) ?? null);
   protected readonly kind = computed<ColKind>(() => {
@@ -163,6 +198,53 @@ export class ConditionRowComponent {
     return typeof span === "object" && "day" in span ? span.day : "";
   });
   protected readonly listText = computed(() => this.node().args.map((a) => this.text(a)).join("\n"));
+  protected readonly stringArgs = computed(() => this.node().args.filter((a): a is string => typeof a === "string"));
+  protected readonly dateKind = computed(() => isDateKind(this.kind()));
+  /** The value picker fits conditions that take values from the column. */
+  protected readonly canPick = computed(
+    () =>
+      !!this.values() &&
+      this.node().column !== SEARCH_COLUMN &&
+      ["one", "two", "list"].includes(this.shape()) &&
+      this.node().op !== "regex" &&
+      this.kind() !== "bool" &&
+      this.kind() !== "binary",
+  );
+
+  protected pickValue(v: string): void {
+    const shape = this.shape();
+    if (shape === "list") {
+      const args = this.stringArgs();
+      this.emit({ args: args.includes(v) ? args.filter((a) => a !== v) : [...args, v] });
+    } else if (shape === "two" && !this.argText(0)) {
+      this.setArg(0, v);
+    } else {
+      this.setArg(shape === "two" ? 1 : 0, v);
+      this.pickerOpen.set(false);
+    }
+  }
+
+  /** NULL picked: the condition becomes "is null". */
+  protected pickNull(): void {
+    this.emit({ op: "isNull", args: [] });
+    this.pickerOpen.set(false);
+  }
+
+  protected openCal(el: HTMLInputElement): void {
+    try {
+      el.showPicker();
+    } catch {
+      el.focus();
+    }
+  }
+
+  /** A day from the calendar. "=" a day on a timestamp column means that whole day. */
+  protected pickDate(i: number, day: string): void {
+    if (!day) return;
+    const timestamp = this.kind() === "timestamp" || this.kind() === "timestamptz";
+    if (timestamp && this.node().op === "eq") this.emit({ op: "range", args: [], span: { day } });
+    else this.setArg(i, day);
+  }
 
   private text(a: Arg | undefined): string {
     return a === undefined ? "" : typeof a === "string" ? a : printPoint(a);

@@ -88,6 +88,13 @@ pub async fn count_rows(input: ConnectionInput, request: db::browse::CountReques
     ops::cancellable(op_id, dispatch::count_rows(&input, request)).await
 }
 
+/// A column's values with how often each occurs among the rows matching a filter (read-only,
+/// sampled, time-limited): the value picker.
+#[tauri::command]
+pub async fn value_counts(input: ConnectionInput, request: db::values::ValuesRequest, op_id: Option<String>) -> Result<db::values::ValuesResult, AppError> {
+    ops::cancellable(op_id, dispatch::value_counts(&input, request)).await
+}
+
 /// "Related data": the rows a row references and the rows referencing it, as a batch of key
 /// lookups on one connection (read-only).
 #[tauri::command]

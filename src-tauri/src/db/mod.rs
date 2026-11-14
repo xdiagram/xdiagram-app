@@ -15,6 +15,7 @@ pub mod sql;
 pub mod sqlite;
 pub mod ssh;
 pub mod types;
+pub mod values;
 pub mod workload;
 pub mod workload_db;
 

@@ -7,6 +7,7 @@ import { opsFor } from "../../filter/operators";
 import { condLabel, nodeText } from "../../filter/printer";
 import { addNode, hasActive, removeNode, replaceNode, toggleOff } from "../../filter/tree";
 import { ConditionRowComponent } from "./condition-row.component";
+import type { ValueSource } from "./value-picker.component";
 
 interface Editing {
   /** The node being edited (a copy: applied on Apply). */
@@ -72,7 +73,8 @@ interface Editing {
       <div class="scrim" (click)="cancel()"></div>
       <div class="editor" role="dialog" aria-label="Edit filter" [style.left.px]="e.x" [style.top.px]="e.y">
         @if (e.draft.t === "cond") {
-          <app-condition-row [columns]="columns()" [engine]="engine()" [node]="e.draft" [issue]="issueOf(e.draft)" (changed)="setDraft($event)" (submit)="apply()" />
+          <app-condition-row [columns]="columns()" [engine]="engine()" [node]="e.draft" [issue]="issueOf(e.draft)" [values]="values()"
+            (changed)="setDraft($event)" (submit)="apply()" />
         } @else {
           <div class="group-head">
             Rows match
@@ -85,7 +87,8 @@ interface Editing {
           @for (c of e.draft.items; track c.id) {
             <div class="item">
               @if (c.t === "cond") {
-                <app-condition-row [columns]="columns()" [engine]="engine()" [node]="c" [issue]="issueOf(c)" (changed)="setDraftItem($event)" (submit)="apply()" />
+                <app-condition-row [columns]="columns()" [engine]="engine()" [node]="c" [issue]="issueOf(c)" [values]="values()"
+                  (changed)="setDraftItem($event)" (submit)="apply()" />
               } @else {
                 <span class="nested">{{ text(c) }}</span>
               }
@@ -151,6 +154,8 @@ export class FilterBarComponent {
   readonly engine = input<Engine | null>(null);
   readonly tree = input.required<GroupNode>();
   readonly issues = input<FilterIssue[]>([]);
+  /** Where the value picker gets a column's values. */
+  readonly values = input<ValueSource | null>(null);
   readonly treeChange = output<GroupNode>();
   /** Whether the expression box is shown (the Text button). */
   readonly textOpen = input(false);

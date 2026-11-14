@@ -11,6 +11,7 @@ import { hasActive, singleColumn } from "../filter/tree";
 import { BrowseLocation, BrowserStore } from "../state/browser.store";
 import { ExpressionBoxComponent } from "./filter/expression-box.component";
 import { FilterBarComponent } from "./filter/filter-bar.component";
+import type { ValueSource } from "./filter/value-picker.component";
 import { ProfileViewComponent } from "./profile-view.component";
 import { QueryViewComponent } from "./query-view.component";
 import { QueryStore } from "../state/query.store";
@@ -94,7 +95,7 @@ function readHeight(): number {
     @if (store.current(); as cur) {
       @if (store.columns().length) {
         <app-filter-bar [columns]="store.columns()" [engine]="store.engine()" [tree]="cur.where" [issues]="store.issues()"
-          (treeChange)="store.setWhere($event)" [textOpen]="textOpen()" (textToggle)="toggleText()" />
+          (treeChange)="store.setWhere($event)" [textOpen]="textOpen()" (textToggle)="toggleText()" [values]="valueSource" />
         @if (textOpen()) {
           <app-expression-box [columns]="store.columns()" [engine]="store.engine()" [tree]="cur.where" [history]="store.expressionHistory()"
             [values]="knownValues" (treeChange)="store.setWhere($event)" (used)="store.rememberExpression($event)" />
@@ -405,6 +406,7 @@ export class DataDrawerComponent {
   protected readonly textOpen = signal(readTextOpen());
   private readonly exprBox = viewChild(ExpressionBoxComponent);
   protected readonly knownValues = (column: string) => this.store.knownValues(column);
+  protected readonly valueSource: ValueSource = (column, search, exclude) => this.store.valueCounts(column, search, exclude);
 
   protected toggleText(): void {
     const open = !this.textOpen();
