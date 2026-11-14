@@ -126,6 +126,14 @@ export class BrowserStore {
   });
 
   constructor() {
+    // Each table has its own facet columns.
+    effect(() => {
+      const id = this.currentTable();
+      untracked(() => {
+        this.chosenFacets.set(null);
+        void this.loadFacets(id);
+      });
+    });
     // A different database (or a file) means the trail no longer applies.
     effect(() => {
       this.workspace.source();
@@ -200,32 +208,34 @@ export class BrowserStore {
   }
 
   private readonly valueCache = new Map<string, Promise<ValuesResult>>();
-  private valuesOp: string | null = null;
+  /** The running value count per channel (the picker, each facet). */
+  private readonly valuesOps = new Map<string, string>();
 
   /**
    * A column's values with their counts among the rows the current filter matches, leaving out
    * the condition `exclude` (the one being edited, so its own value does not narrow the list).
-   * Cached per filter until Reload; a newer request cancels the running one.
+   * Cached per filter until Reload; a newer request on the same `channel` cancels the running one.
    */
-  async valueCounts(column: string, search = "", exclude: string | null = null): Promise<ValuesResult> {
+  async valueCounts(column: string, search = "", exclude: string | null = null, channel = "picker", limit = 50): Promise<ValuesResult> {
     const loc = this.current();
     const conn = await this.workspace.currentConnection();
     if (!loc || !conn) throw new Error("Not connected");
     const where = exclude ? removeNode(loc.where, exclude) : loc.where;
     const filter = this.wireOf(where, loc.tableId);
-    const key = [loc.tableId, column, search, wireKey(filter)].join("\u0000");
+    const key = [loc.tableId, column, search, limit, wireKey(filter)].join("\u0000");
     const cached = this.valueCache.get(key);
     if (cached) return cached;
-    if (this.valuesOp) void this.api.cancelOp(this.valuesOp);
+    const previous = this.valuesOps.get(channel);
+    if (previous) void this.api.cancelOp(previous);
     const op = crypto.randomUUID();
-    this.valuesOp = op;
+    this.valuesOps.set(channel, op);
     this.running.add(op);
     const { schema, table } = splitTableId(loc.tableId);
     // A picker should answer quickly: a few seconds at most, whatever the query time limit.
     const timeoutSecs = Math.min(this.settings.settings().queryTimeoutSecs, 5);
-    const result = this.api.valueCounts(conn.input, { schema, table, column, filter, search: search || undefined, limit: 50, timeoutSecs }, op).finally(() => {
+    const result = this.api.valueCounts(conn.input, { schema, table, column, filter, search: search || undefined, limit, timeoutSecs }, op).finally(() => {
       this.running.delete(op);
-      if (this.valuesOp === op) this.valuesOp = null;
+      if (this.valuesOps.get(channel) === op) this.valuesOps.delete(channel);
     });
     this.valueCache.set(key, result);
     // Failures, cancellations and timeouts are asked again next time.
@@ -324,6 +334,35 @@ export class BrowserStore {
     const name = schema && schema !== "public" ? `${schema}.${table}` : table;
     const path = await this.api.saveFile({ defaultName: `${name}.${format}`, filterName: format.toUpperCase(), extensions: [format], contents, base64: false });
     return path ? { rows: r.rows.length, truncated: r.truncated } : null;
+  }
+
+  private readonly currentTable = computed(() => this.current()?.tableId ?? null);
+  /** The facet panel's columns for the current table, as chosen (null: the defaults). */
+  private readonly chosenFacets = signal<string[] | null>(null);
+  /** The facet panel's columns: chosen, else enums, booleans and foreign keys (four at most). */
+  readonly facets = computed(() => {
+    const chosen = this.chosenFacets();
+    if (chosen) return chosen.filter((f) => this.columns().some((c) => c.name === f));
+    const engine = this.engine();
+    const fks = new Set(this.outgoing().filter((r) => r.from.fields.length === 1).map((r) => r.from.fields[0]));
+    return this.columns()
+      .filter((c) => ["enum", "bool"].includes(kindOf(c, engine)) || fks.has(c.name))
+      .slice(0, 4)
+      .map((c) => c.name);
+  });
+
+  /** Chooses the facet panel's columns (remembered for the table). */
+  setFacets(columns: string[]): void {
+    const id = this.currentTable();
+    this.chosenFacets.set(columns);
+    const dbKey = this.workspace.databaseKey();
+    if (id && dbKey) void this.memory.update(dbKey, (m) => rememberTable(m, id, { facets: columns }));
+  }
+
+  private async loadFacets(tableId: string | null): Promise<void> {
+    const dbKey = this.workspace.databaseKey();
+    const chosen = tableId && dbKey ? ((await this.memory.table(dbKey, tableId))?.facets ?? null) : null;
+    if (this.currentTable() === tableId) this.chosenFacets.set(chosen);
   }
 
   /** The named filters of the current table. */

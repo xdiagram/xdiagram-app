@@ -12,6 +12,7 @@ import { nodeText } from "../filter/printer";
 import { hasActive, singleColumn } from "../filter/tree";
 import { BrowseLocation, BrowserStore } from "../state/browser.store";
 import { ExpressionBoxComponent } from "./filter/expression-box.component";
+import { type FacetSource, FacetPanelComponent } from "./filter/facet-panel.component";
 import { type CopyKind, FilterBarComponent } from "./filter/filter-bar.component";
 import type { FkSource, SavedSource, ValueSource } from "../filter/pickers";
 import { ProfileViewComponent } from "./profile-view.component";
@@ -22,13 +23,18 @@ import { WorkspaceStore, isCancelled } from "../state/workspace.store";
 
 const HEIGHT_KEY = "xdiagram.dataDrawerHeight";
 const TEXT_KEY = "xdiagram.filterTextOpen";
+const FACETS_KEY = "xdiagram.facetsOpen";
 
-function readTextOpen(): boolean {
+function readFlag(key: string): boolean {
   try {
-    return localStorage.getItem(TEXT_KEY) === "1";
+    return localStorage.getItem(key) === "1";
   } catch {
     return false;
   }
+}
+
+function readTextOpen(): boolean {
+  return readFlag(TEXT_KEY);
 }
 
 function readHeight(): number {
@@ -42,7 +48,7 @@ function readHeight(): number {
 /** Bottom drawer listing a page of rows; foreign keys are links (read-only). */
 @Component({
   selector: "app-data-drawer",
-  imports: [ProfileViewComponent, QueryViewComponent, FilterBarComponent, ExpressionBoxComponent],
+  imports: [ProfileViewComponent, QueryViewComponent, FilterBarComponent, ExpressionBoxComponent, FacetPanelComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { "[style.height.px]": "height()", "(document:keydown.escape)": "rowMenu.set(null); colMenu.set(null); picked.set(null)" },
   template: `
@@ -98,6 +104,7 @@ function readHeight(): number {
       @if (store.columns().length) {
         <app-filter-bar [columns]="store.columns()" [engine]="store.engine()" [tree]="cur.where" [issues]="store.issues()"
           (treeChange)="store.setWhere($event)" [textOpen]="textOpen()" (textToggle)="toggleText()" [values]="valueSource" [fk]="fkSource"
+          [facetsOpen]="facetsOpen()" (facetsToggle)="toggleFacets()"
           [saved]="savedSource" [sort]="cur.sort" [canCopy]="true" (copy)="copyFilter($event)" [rels]="store.relOptions()" [relColumns]="relColumns" />
         @if (textOpen()) {
           <app-expression-box [columns]="store.columns()" [engine]="store.engine()" [tree]="cur.where" [history]="store.expressionHistory()"
@@ -109,6 +116,11 @@ function readHeight(): number {
       <div class="error">{{ err }}</div>
     }
     @if (store.result(); as r) {
+      <div class="rows-main">
+      @if (facetsOpen() && store.current(); as cur) {
+        <app-facet-panel [columns]="store.columns()" [tree]="cur.where" [facets]="store.facets()" [source]="facetSource"
+          (treeChange)="store.setWhere($event)" (facetsChange)="store.setFacets($event)" />
+      }
       <div class="grid-wrap" [class.dim]="store.loading()">
         <table class="grid">
           <thead>
@@ -162,6 +174,7 @@ function readHeight(): number {
             }
           </tbody>
         </table>
+      </div>
       </div>
       <footer>
         <span>{{ range() }}</span>
@@ -298,7 +311,8 @@ function readHeight(): number {
     .loading { padding: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 10px; }
     .cancel { font: inherit; font-size: 12px; border: 1px solid var(--border); background: var(--panel); color: var(--text);
       border-radius: 6px; padding: 2px 9px; cursor: pointer; }
-    .grid-wrap { flex: 1; min-height: 0; overflow: auto; }
+    .rows-main { flex: 1; min-height: 0; display: flex; }
+    .grid-wrap { flex: 1; min-height: 0; min-width: 0; overflow: auto; }
     .grid-wrap.dim { opacity: 0.6; }
     table { border-collapse: separate; border-spacing: 0; font-family: var(--mono); font-size: 11.5px; }
     th, td { padding: 3px 8px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); text-align: left;
@@ -424,6 +438,20 @@ export class DataDrawerComponent {
   protected readonly knownValues = (column: string) => this.store.knownValues(column);
   protected readonly valueSource: ValueSource = (column, search, exclude) => this.store.valueCounts(column, search, exclude);
   protected readonly relColumns = (tableId: string) => this.store.relColumns(tableId);
+  protected readonly facetSource: FacetSource = (column, exclude, limit) => this.store.valueCounts(column, "", exclude, `facet:${column}`, limit);
+
+  /** The facet panel beside the grid (remembered on this computer). */
+  protected readonly facetsOpen = signal(readFlag(FACETS_KEY));
+
+  protected toggleFacets(): void {
+    const open = !this.facetsOpen();
+    this.facetsOpen.set(open);
+    try {
+      localStorage.setItem(FACETS_KEY, open ? "1" : "0");
+    } catch {
+      // Not kept: it opens closed next time.
+    }
+  }
   protected readonly savedSource: SavedSource = {
     list: () => this.store.savedFilters(),
     save: (name) => this.store.saveFilter(name),

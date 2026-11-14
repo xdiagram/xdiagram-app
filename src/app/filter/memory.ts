@@ -15,6 +15,8 @@ export interface TableMemory {
   saved?: SavedFilter[];
   /** The column shown for a row when it is picked by a foreign key (phase 2). */
   labelColumn?: string;
+  /** The columns of the facet panel (phase 3). */
+  facets?: string[];
   updatedAt: string;
 }
 
@@ -54,6 +56,7 @@ export function parseMemory(raw: string | null): DbMemory {
       if (Array.isArray(m.sort)) entry.sort = m.sort.filter((k) => k && typeof k.column === "string").map((k) => ({ column: k.column, desc: !!k.desc }));
       if (Array.isArray(m.saved)) entry.saved = m.saved.filter((s) => s && typeof s.name === "string" && isGroup(s.where)).map((s) => ({ name: s.name, where: s.where, sort: Array.isArray(s.sort) ? s.sort : [] }));
       if (typeof m.labelColumn === "string") entry.labelColumn = m.labelColumn;
+      if (Array.isArray(m.facets)) entry.facets = m.facets.filter((f): f is string => typeof f === "string").slice(0, 12);
       out.tables[table] = entry;
     }
   }
@@ -62,7 +65,7 @@ export function parseMemory(raw: string | null): DbMemory {
 }
 
 function isEmptyEntry(e: TableMemory): boolean {
-  return !(e.where && e.where.items.length) && !(e.sort && e.sort.length) && !(e.saved && e.saved.length) && !e.labelColumn;
+  return !(e.where && e.where.items.length) && !(e.sort && e.sort.length) && !(e.saved && e.saved.length) && !e.labelColumn && !e.facets;
 }
 
 /** Updates one table's entry (dropping it when nothing is left), keeping the newest `MAX_TABLES`. */

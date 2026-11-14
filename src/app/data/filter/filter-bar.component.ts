@@ -90,6 +90,10 @@ interface Editing {
     }
     <button type="button" class="text" [class.on]="textOpen()" [attr.aria-pressed]="textOpen()" (click)="textToggle.emit()"
       title="Edit the whole filter as text, e.g. role = admin and (created_at: last 7 days or email ~ gmail)">Text</button>
+    @if (facetsOpen() !== null) {
+      <button type="button" class="text" [class.on]="facetsOpen()" [attr.aria-pressed]="facetsOpen()" (click)="facetsToggle.emit()"
+        title="Facets beside the grid: the most frequent values of a few columns with their counts; tick to filter">Facets</button>
+    }
     @if (canCopy()) {
       <span class="saved-wrap">
         <button type="button" class="text" [class.on]="copyMenu()" [attr.aria-expanded]="copyMenu()" (click)="copyMenu.set(!copyMenu())"
@@ -288,6 +292,9 @@ export class FilterBarComponent {
   /** Whether the expression box is shown (the Text button). */
   readonly textOpen = input(false);
   readonly textToggle = output<void>();
+  /** Whether the facet panel is shown (null: no Facets button). */
+  readonly facetsOpen = input<boolean | null>(null);
+  readonly facetsToggle = output<void>();
 
   protected readonly editing = signal<Editing | null>(null);
   private readonly issueById = computed(() => new Map(this.issues().map((i) => [i.node, i.message])));
