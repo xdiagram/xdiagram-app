@@ -8,6 +8,7 @@ import {
   ConnectionInput,
   Engine,
   FilterIssue,
+  ScanNote,
   TableInfo,
   TableProfile,
   TauriApi,
@@ -51,8 +52,8 @@ export type DrawerMode = "rows" | "profile" | "query";
 export type CountState =
   | { state: "idle" }
   | { state: "loading" }
-  | { state: "done"; count: number; capped: boolean }
-  | { state: "timedOut" }
+  | { state: "done"; count: number; capped: boolean; scan?: ScanNote }
+  | { state: "timedOut"; scan?: ScanNote }
   | { state: "error"; message: string };
 
 /**
@@ -716,7 +717,8 @@ export class BrowserStore {
     try {
       const r = await this.api.countRows(conn.input, { request: { schema, table, filters: [], filter, limit: 1, offset: 0, timeoutSecs: this.settings.settings().queryTimeoutSecs }, cap: COUNT_CAP }, op);
       if (seq !== this.countSeq) return;
-      const state: CountState = r.timedOut ? { state: "timedOut" } : { state: "done", count: r.count, capped: r.capped };
+      const scan = r.scan ? { scan: r.scan } : {};
+      const state: CountState = r.timedOut ? { state: "timedOut", ...scan } : { state: "done", count: r.count, capped: r.capped, ...scan };
       if (!r.timedOut) this.counts.set(key, state);
       this.count.set(state);
     } catch (err) {

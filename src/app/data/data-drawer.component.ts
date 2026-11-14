@@ -19,6 +19,7 @@ import { ProfileViewComponent } from "./profile-view.component";
 import { QueryViewComponent } from "./query-view.component";
 import { QueryStore } from "../state/query.store";
 import { RowGraphStore } from "../state/row-graph.store";
+import { WorkloadStore } from "../state/workload.store";
 import { WorkspaceStore, isCancelled } from "../state/workspace.store";
 
 const HEIGHT_KEY = "xdiagram.dataDrawerHeight";
@@ -181,6 +182,14 @@ function readHeight(): number {
         @if (countText(); as ct) {
           <span class="count" [class.muted]="store.count().state !== 'done'">· {{ ct }}</span>
         }
+        @if (scanNote(); as s) {
+          <span class="scan" [title]="'PostgreSQL plans to read all of ' + s.table + ' for this filter: no index serves it, so it slows down as the table grows.'">
+            · reads all ~{{ fmtRows(s.rows) }} rows
+            @if (xrayAvailable()) {
+              <button type="button" class="link" (click)="showIndexAdvice()">index advice</button>
+            }
+          </span>
+        }
         @if (r.truncatedCells) {
           <span class="muted">· {{ r.truncatedCells }} long values shortened</span>
         }
@@ -341,6 +350,8 @@ function readHeight(): number {
     .reopen:hover { background: var(--hover); }
     td.none { color: var(--text-muted); font-family: var(--font); cursor: default; padding: 10px; }
     footer { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-top: 1px solid var(--border); flex: none; }
+    footer .scan { color: var(--warn); }
+    footer .scan .link { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; }
     footer .related { font: inherit; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; padding: 1px 4px; background: var(--panel);
       color: var(--accent); max-width: 220px; cursor: pointer; }
     footer button { font: inherit; font-size: 12px; border: 1px solid var(--border); background: var(--panel); color: var(--text);
@@ -365,6 +376,7 @@ export class DataDrawerComponent {
   protected readonly store = inject(BrowserStore);
   protected readonly rowGraph = inject(RowGraphStore);
   private readonly workspace = inject(WorkspaceStore);
+  private readonly workload = inject(WorkloadStore);
   private readonly injector = inject(Injector);
 
   constructor() {
@@ -463,6 +475,22 @@ export class DataDrawerComponent {
     rows: (column, search, label) => this.store.fkRows(column, search, label ?? null),
     setLabel: (column, label) => this.store.setFkLabel(column, label),
   };
+
+  /** PostgreSQL reads the whole (large) table for this filter. */
+  protected readonly scanNote = computed(() => {
+    const c = this.store.count();
+    return (c.state === "done" || c.state === "timedOut") && c.scan ? c.scan : null;
+  });
+  protected readonly xrayAvailable = computed(() => this.store.engine() === "postgres");
+
+  protected fmtRows(n: number): string {
+    return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(Math.round(n));
+  }
+
+  /** The X-ray panel: its advisor proposes indexes for the columns queries filter on. */
+  protected showIndexAdvice(): void {
+    void this.workload.reveal();
+  }
 
   /** Footer: the related rows of all the rows that match, in a new step of the trail. */
   protected openRelated(select: HTMLSelectElement): void {

@@ -132,6 +132,15 @@ export class WorkloadStore {
     else await this.enable();
   }
 
+  /** Asks for the X-ray panel to be shown (its index advice); a change of this number shows it. */
+  readonly revealRequests = signal(0);
+
+  /** Shows the X-ray panel, turning X-ray on first when it is off. */
+  async reveal(): Promise<void> {
+    if (!this.enabled()) await this.enable();
+    this.revealRequests.update((n) => n + 1);
+  }
+
   async enable(): Promise<void> {
     const src = this.workspace.source();
     if (src?.kind === "db" && src.engine !== "postgres") {

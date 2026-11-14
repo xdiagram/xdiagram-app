@@ -192,7 +192,7 @@ pub async fn count_rows(input: &ConnectionInput, request: CountRequest) -> Resul
     let started = Instant::now();
     let tables = with_related((request.request.schema.clone(), request.request.table.clone()), request.request.filter.as_ref());
     let req = request.clone();
-    run(input, tables, move |d, cat| Ok(vec![plan_count(d, cat, &req)?]), move |_, _, ran| finish_count(&request, ran, started)).await
+    run(input, tables, move |d, cat| plan_count(d, cat, &req), move |_, cat, ran| finish_count(cat, &request, ran, started)).await
 }
 
 /// The rows a browse request's filter matches, from the first, whole values: for an export.

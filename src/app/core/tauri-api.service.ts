@@ -230,6 +230,14 @@ export interface CountResult {
   capped: boolean;
   timedOut: boolean;
   elapsedMs: number;
+  /** PostgreSQL plans to read the whole (large) table for this filter: no index serves it. */
+  scan?: ScanNote;
+}
+
+export interface ScanNote {
+  table: string;
+  /** The planner's estimate of the table's rows. */
+  rows: number;
 }
 
 export interface ValuesRequest {

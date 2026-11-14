@@ -337,7 +337,7 @@ pub struct CountRequest {
 pub const DEFAULT_COUNT_CAP: u64 = 100_000;
 pub const MAX_COUNT_CAP: u64 = 10_000_000;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CountResult {
     pub count: u64,
@@ -346,6 +346,23 @@ pub struct CountResult {
     /// The count did not finish in time.
     pub timed_out: bool,
     pub elapsed_ms: u64,
+    /// PostgreSQL plans to read the whole (large) table for this filter: no index serves it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scan: Option<ScanNote>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanNote {
+    pub table: String,
+    /// The planner's estimate of the table's rows.
+    pub rows: f64,
+}
+
+/// The planner's plan for the filter on `table` (aliased `t0`) reads all of it.
+fn plans_full_scan(plan: &[Vec<Option<String>>]) -> bool {
+    let alias = format!(" {ALIAS} ");
+    plan.iter().flatten().flatten().any(|line| line.contains("Seq Scan on ") && (line.contains(&alias) || line.trim_end().ends_with(&format!(" {ALIAS}"))))
 }
 
 impl CountRequest {
@@ -355,35 +372,50 @@ impl CountRequest {
 }
 
 /// Counts the matching rows up to `cap + 1` (so it can tell the cap was passed), optional:
-/// a timeout is reported, not raised.
-pub fn plan_count(d: Dialect, cat: &Catalog, req: &CountRequest) -> Result<Stmt, AppError> {
+/// a timeout is reported, not raised. On PostgreSQL, for a filter on a large table, also the
+/// plan of the filter (`EXPLAIN`, nothing runs), to tell whether it reads the whole table.
+pub fn plan_count(d: Dialect, cat: &Catalog, req: &CountRequest) -> Result<Vec<Stmt>, AppError> {
     let b = &req.request;
     let meta = meta_of(cat, b)?;
     let mut r = Render::new(d);
     let filter = combine(b.filter.as_ref(), &b.filters);
     let cond = where_clause(&mut r, &Scope::new(meta, ALIAS).with_catalog(cat), filter.as_ref())?;
     let alias = d.quote(ALIAS);
-    let wher = cond.map(|c| format!(" WHERE {c}")).unwrap_or_default();
+    let wher = cond.as_ref().map(|c| format!(" WHERE {c}")).unwrap_or_default();
     let n = req.cap() + 1;
     let sql = match d {
         Dialect::Mssql => format!("SELECT CONVERT(NVARCHAR(MAX), COUNT(*)) FROM (SELECT TOP ({n}) 1 AS x FROM {} AS {alias}{wher}) AS c", meta.qualified),
         Dialect::Postgres => format!("SELECT (count(*))::text FROM (SELECT 1 AS x FROM {} AS {alias}{wher} LIMIT {n}) AS c", meta.qualified),
         Dialect::Mysql | Dialect::Sqlite => format!("SELECT count(*) FROM (SELECT 1 AS x FROM {} AS {alias}{wher} LIMIT {n}) AS c", meta.qualified),
     };
-    Ok(Stmt { sql, params: r.params, timeout_s: b.timeout(), optional: true })
+    let mut out = vec![Stmt { sql, params: r.params.clone(), timeout_s: b.timeout(), optional: true }];
+    if d == Dialect::Postgres && cond.is_some() && meta.row_estimate >= super::advisor::LARGE_TABLE_ROWS {
+        let explain = format!("EXPLAIN SELECT 1 FROM {} AS {alias}{wher}", meta.qualified);
+        out.push(Stmt { sql: explain, params: r.params, timeout_s: b.timeout().min(5), optional: true });
+    }
+    Ok(out)
 }
 
-pub fn finish_count(req: &CountRequest, ran: Vec<Ran>, started: Instant) -> Result<CountResult, AppError> {
+pub fn finish_count(cat: &Catalog, req: &CountRequest, ran: Vec<Ran>, started: Instant) -> Result<CountResult, AppError> {
     let elapsed_ms = started.elapsed().as_millis() as u64;
-    match ran.into_iter().next() {
+    let mut ran = ran.into_iter();
+    let mut out = match ran.next() {
         Some(Ran::Rows(rows)) => {
             let n: u64 = rows.first().and_then(|r| r.first()).cloned().flatten().and_then(|v| v.parse().ok()).unwrap_or(0);
             let cap = req.cap();
-            Ok(CountResult { count: n.min(cap), capped: n > cap, timed_out: false, elapsed_ms })
+            CountResult { count: n.min(cap), capped: n > cap, timed_out: false, elapsed_ms, scan: None }
         }
-        Some(Ran::Failed(e)) => Err(e),
-        _ => Ok(CountResult { count: 0, capped: false, timed_out: true, elapsed_ms }),
+        Some(Ran::Failed(e)) => return Err(e),
+        _ => CountResult { count: 0, capped: false, timed_out: true, elapsed_ms, scan: None },
+    };
+    // The plan is a hint: when it could not be read, there is simply no note.
+    if let Some(Ran::Rows(plan)) = ran.next()
+        && plans_full_scan(&plan)
+    {
+        let meta = meta_of(cat, &req.request)?;
+        out.scan = Some(ScanNote { table: meta.table.clone(), rows: meta.row_estimate });
     }
+    Ok(out)
 }
 
 /// The page's rows and what was applied.
@@ -655,19 +687,47 @@ mod tests {
         let req = CountRequest { request: b, cap: Some(1000) };
         let pg = catalog(Dialect::Postgres, &[("id", "integer", false)], &["id"], None);
         let st = plan_count(Dialect::Postgres, &pg, &req).unwrap();
-        assert_eq!(st.sql, "SELECT (count(*))::text FROM (SELECT 1 AS x FROM \"public\".\"users\" AS \"t0\" WHERE \"t0\".\"id\" > ($1::text)::integer LIMIT 1001) AS c");
-        assert!(st.optional);
+        assert_eq!(st.len(), 1, "a small table: no plan asked for");
+        assert_eq!(st[0].sql, "SELECT (count(*))::text FROM (SELECT 1 AS x FROM \"public\".\"users\" AS \"t0\" WHERE \"t0\".\"id\" > ($1::text)::integer LIMIT 1001) AS c");
+        assert!(st[0].optional);
         let ms = catalog(Dialect::Mssql, &[("id", "int", false)], &["id"], None);
         assert_eq!(
-            plan_count(Dialect::Mssql, &ms, &req).unwrap().sql,
+            plan_count(Dialect::Mssql, &ms, &req).unwrap()[0].sql,
             "SELECT CONVERT(NVARCHAR(MAX), COUNT(*)) FROM (SELECT TOP (1001) 1 AS x FROM [public].[users] AS [t0] WHERE [t0].[id] > @P1) AS c"
         );
         let started = Instant::now();
         let rows = |n: &str| vec![Ran::Rows(vec![vec![Some(n.to_string())]])];
-        assert!(finish_count(&req, rows("1001"), started).unwrap().capped);
-        assert_eq!(finish_count(&req, rows("1001"), started).unwrap().count, 1000);
-        assert_eq!(finish_count(&req, rows("12"), started).unwrap(), CountResult { count: 12, capped: false, timed_out: false, elapsed_ms: 0 });
-        assert!(finish_count(&req, vec![Ran::TimedOut], started).unwrap().timed_out);
+        assert!(finish_count(&pg, &req, rows("1001"), started).unwrap().capped);
+        assert_eq!(finish_count(&pg, &req, rows("1001"), started).unwrap().count, 1000);
+        assert_eq!(finish_count(&pg, &req, rows("12"), started).unwrap(), CountResult { count: 12, capped: false, timed_out: false, elapsed_ms: 0, scan: None });
+        assert!(finish_count(&pg, &req, vec![Ran::TimedOut], started).unwrap().timed_out);
+    }
+
+    #[test]
+    fn a_full_scan_of_a_large_table_is_noted() {
+        let mut b = request();
+        b.filter = Some(FilterNode::Cond { id: "c".into(), column: "id".into(), op: Op::Gt, args: vec!["5".into()], cs: false });
+        let req = CountRequest { request: b, cap: Some(1000) };
+        let mut pg = catalog(Dialect::Postgres, &[("id", "integer", false)], &["id"], None);
+        pg.get_mut(&("public".to_string(), "users".to_string())).unwrap().row_estimate = 1_200_000.0;
+        let st = plan_count(Dialect::Postgres, &pg, &req).unwrap();
+        assert_eq!(st[1].sql, "EXPLAIN SELECT 1 FROM \"public\".\"users\" AS \"t0\" WHERE \"t0\".\"id\" > ($1::text)::integer");
+        assert_eq!(st[1].params, vec!["5"]);
+        let started = Instant::now();
+        let plan = |lines: &[&str]| Ran::Rows(lines.iter().map(|l| vec![Some(l.to_string())]).collect());
+        let count = Ran::Rows(vec![vec![Some("7".into())]]);
+        let seq = finish_count(&pg, &req, vec![count, plan(&["Seq Scan on users t0  (cost=0.00..20834.00 rows=400000 width=4)", "  Filter: (id > 5)"])], started).unwrap();
+        assert_eq!(seq.scan, Some(ScanNote { table: "users".into(), rows: 1_200_000.0 }));
+        let count = Ran::Rows(vec![vec![Some("7".into())]]);
+        let idx = finish_count(&pg, &req, vec![count, plan(&["Index Only Scan using users_pkey on users t0  (cost=0.42..8.44 rows=1 width=4)", "  Index Cond: (id > 5)"])], started).unwrap();
+        assert_eq!(idx.scan, None);
+        // A related table read in full is not this table's scan.
+        let count = Ran::Rows(vec![vec![Some("7".into())]]);
+        let other = finish_count(&pg, &req, vec![count, plan(&["Hash Semi Join", "  ->  Index Scan using users_pkey on users t0", "  ->  Seq Scan on orders _r1"])], started).unwrap();
+        assert_eq!(other.scan, None);
+        // No filter: counting everything reads everything anyway, no plan asked.
+        let all = CountRequest { request: request(), cap: Some(1000) };
+        assert_eq!(plan_count(Dialect::Postgres, &pg, &all).unwrap().len(), 1);
     }
 
     #[test]

@@ -219,8 +219,9 @@ export class AppComponent {
       document.title = title;
       void getCurrentWindow().setTitle(title).catch(() => undefined);
     });
-    // Turning X-ray on brings its panel into view.
+    // Turning X-ray on, or asking for its advice, brings its panel into view.
     effect(() => {
+      this.workload.revealRequests();
       if (this.workload.enabled()) {
         this.sidebarTab.set("xray");
         this.sidebarOpen.set(true);
