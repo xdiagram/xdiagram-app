@@ -30,6 +30,18 @@ pub enum AppError {
         "SSH: the host key of {host} has changed (it is now {fingerprint}). Someone may be intercepting the connection; if the server was reinstalled, remove its line from {file}."
     )]
     HostKeyChanged { host: String, fingerprint: String, file: String },
+    /// Filter conditions that cannot run, each tied to its node id (see `db/filter.rs`). Sent to
+    /// the frontend as `{ kind: "filter", message, issues }` so it can mark the conditions.
+    #[error("{}", filter_summary(.0))]
+    Filter(Vec<crate::db::filter::Issue>),
+}
+
+fn filter_summary(issues: &[crate::db::filter::Issue]) -> String {
+    match issues {
+        [] => "Invalid filter".into(),
+        [one] => one.message.clone(),
+        [first, rest @ ..] => format!("{} (and {} more)", first.message, rest.len()),
+    }
 }
 
 impl From<mysql_async::Error> for AppError {
@@ -52,7 +64,17 @@ impl From<rusqlite::Error> for AppError {
 
 impl serde::Serialize for AppError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_string())
+        use serde::ser::SerializeStruct;
+        match self {
+            AppError::Filter(issues) => {
+                let mut s = serializer.serialize_struct("FilterError", 3)?;
+                s.serialize_field("kind", "filter")?;
+                s.serialize_field("message", &self.to_string())?;
+                s.serialize_field("issues", issues)?;
+                s.end()
+            }
+            _ => serializer.serialize_str(&self.to_string()),
+        }
     }
 }
 

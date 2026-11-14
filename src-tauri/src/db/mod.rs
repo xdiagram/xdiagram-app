@@ -3,6 +3,7 @@ pub mod browse;
 pub mod catalog;
 pub mod connect;
 pub mod dispatch;
+pub mod filter;
 pub mod introspect;
 pub mod mssql;
 pub mod mysql;
