@@ -38,14 +38,12 @@ pub enum Engine {
 }
 
 /// What the frontend sends to identify a database. Either `url`, or the discrete fields.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ConnectionInput {
     pub engine: Engine,
     /// SQLite database file.
     pub path: Option<String>,
-    /// SQL Server: accept the server certificate without validation.
-    pub trust_cert: bool,
     pub url: Option<String>,
     pub host: Option<String>,
     pub port: Option<u16>,
@@ -59,8 +57,66 @@ pub struct ConnectionInput {
     pub ssh: Option<super::ssh::SshConfig>,
 }
 
+/// Like `SshConfig`'s: the password and the URL (which may carry one) are never printed.
+impl std::fmt::Debug for ConnectionInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hidden = |v: &Option<String>| v.as_ref().map(|_| "…");
+        f.debug_struct("ConnectionInput")
+            .field("engine", &self.engine)
+            .field("path", &self.path)
+            .field("url", &hidden(&self.url))
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("database", &self.database)
+            .field("user", &self.user)
+            .field("password", &hidden(&self.password))
+            .field("profile_id", &self.profile_id)
+            .field("ssl_mode", &self.ssl_mode)
+            .field("ssh", &self.ssh)
+            .finish()
+    }
+}
+
 fn non_empty(v: &Option<String>) -> Option<&str> {
     v.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// The server a saved database password belongs to (see `secrets`). Defaults are filled in, so
+/// a profile saved with an empty port matches one with the engine's default port.
+pub fn password_binding(input: &ConnectionInput) -> String {
+    let (engine, port) = match input.engine {
+        Engine::Postgres => ("postgres", 5432),
+        Engine::Mysql => ("mysql", 3306),
+        Engine::Mssql => ("mssql", 1433),
+        Engine::Sqlite => ("sqlite", 0),
+    };
+    let ssh = input.ssh.as_ref().map(super::ssh::SshConfig::binding).unwrap_or_default();
+    if let Some(url) = non_empty(&input.url) {
+        return format!("{engine}|url:{url}|{ssh}");
+    }
+    format!(
+        "{engine}|{}|{}|{}|{}|{ssh}",
+        non_empty(&input.host).unwrap_or("localhost").to_ascii_lowercase(),
+        input.port.unwrap_or(port),
+        non_empty(&input.database).unwrap_or(""),
+        non_empty(&input.user).unwrap_or(""),
+    )
+}
+
+/// Every PostgreSQL session starts read-only (on top of the read-only transactions data reads
+/// already use), keeping any `options` the URL carried.
+const READ_ONLY_OPTION: &str = "-c default_transaction_read_only=on";
+
+fn with_read_only(options: Option<&str>) -> String {
+    match options.map(str::trim).filter(|o| !o.is_empty()) {
+        Some(o) => format!("{o} {READ_ONLY_OPTION}"),
+        None => READ_ONLY_OPTION.to_string(),
+    }
+}
+
+/// Connection poolers such as PgBouncer refuse startup options they do not know.
+fn rejects_startup_options(err: &tokio_postgres::Error) -> bool {
+    err.as_db_error().is_some_and(|db| db.message().contains("unsupported startup parameter"))
 }
 
 /// Split `sslmode=verify-ca|verify-full` out of a URL, since tokio-postgres only understands
@@ -96,7 +152,7 @@ pub fn resolve_password(input: &ConnectionInput) -> Result<Option<String>, AppEr
         return Ok(Some(pw.to_string()));
     }
     match non_empty(&input.profile_id) {
-        Some(id) => secrets::get_password(id),
+        Some(id) => secrets::load_bound(id, &password_binding(input)),
         None => Ok(None),
     }
 }
@@ -105,7 +161,7 @@ pub fn non_empty_field(v: &Option<String>) -> Option<&str> {
     non_empty(v)
 }
 
-pub fn build_config(input: &ConnectionInput) -> Result<(Config, SslMode), AppError> {
+pub fn build_config(input: &ConnectionInput, read_only: bool) -> Result<(Config, SslMode), AppError> {
     let (mut config, url_mode) = if let Some(url) = non_empty(&input.url) {
         let (url, mode) = extract_url_ssl_mode(url);
         let config = Config::from_str(&url).map_err(|e| AppError::Invalid(format!("Invalid connection URL: {e}")))?;
@@ -125,12 +181,12 @@ pub fn build_config(input: &ConnectionInput) -> Result<(Config, SslMode), AppErr
     };
 
     // Password precedence: explicit > keychain (saved profile) > whatever the URL carried.
-    if let Some(pw) = input.password.as_deref().filter(|p| !p.is_empty()) {
+    if let Some(pw) = resolve_password(input)? {
         config.password(pw);
-    } else if let Some(profile_id) = non_empty(&input.profile_id)
-        && let Some(pw) = secrets::get_password(profile_id)?
-    {
-        config.password(pw);
+    }
+    if read_only {
+        let options = with_read_only(config.get_options());
+        config.options(&options);
     }
 
     let mode = input.ssl_mode.or(url_mode).unwrap_or_default();
@@ -145,16 +201,48 @@ pub fn build_config(input: &ConnectionInput) -> Result<(Config, SslMode), AppErr
 }
 
 pub async fn connect(input: &ConnectionInput) -> Result<Client, AppError> {
-    let (mut config, mode) = build_config(input)?;
+    match open(input, true).await {
+        Err(Open::Pg(e)) if rejects_startup_options(&e) => {
+            // Behind a pooler: connect without the session option. Browsing, profiling, related
+            // rows and data checks still run in `SET TRANSACTION READ ONLY` transactions.
+            open(input, false).await.map_err(AppError::from)
+        }
+        other => other.map_err(AppError::from),
+    }
+}
+
+/// `connect`'s failure, keeping the PostgreSQL error so a refused startup option can be retried.
+enum Open {
+    Pg(tokio_postgres::Error),
+    App(AppError),
+}
+
+impl From<AppError> for Open {
+    fn from(e: AppError) -> Self {
+        Open::App(e)
+    }
+}
+
+impl From<Open> for AppError {
+    fn from(e: Open) -> Self {
+        match e {
+            Open::Pg(e) => e.into(),
+            Open::App(e) => e,
+        }
+    }
+}
+
+async fn open(input: &ConnectionInput, read_only: bool) -> Result<Client, Open> {
+    let (mut config, mode) = build_config(input, read_only)?;
     if input.ssh.is_some() {
         let host = match config.get_hosts() {
             [host] => match host {
                 tokio_postgres::config::Host::Tcp(host) => host.clone(),
                 // Unix sockets exist only on Unix builds.
                 #[allow(unreachable_patterns)]
-                _ => return Err(AppError::Invalid("An SSH tunnel needs a TCP host, not a socket".into())),
+                _ => return Err(AppError::Invalid("An SSH tunnel needs a TCP host, not a socket".into()).into()),
             },
-            _ => return Err(AppError::Invalid("An SSH tunnel needs a single database host".into())),
+            _ => return Err(AppError::Invalid("An SSH tunnel needs a single database host".into()).into()),
         };
         let port = config.get_ports().first().copied().unwrap_or(5432);
         if let Some(local) = super::ssh::route(input, &host, port).await? {
@@ -162,7 +250,7 @@ pub async fn connect(input: &ConnectionInput) -> Result<Client, AppError> {
         }
     }
     let tls = MakeRustlsConnect::new(tls_config(mode)?);
-    let (client, connection) = config.connect(tls.clone()).await?;
+    let (client, connection) = config.connect(tls.clone()).await.map_err(Open::Pg)?;
     // A cancelled operation also cancels the statement running on the server.
     crate::ops::register(crate::ops::Interrupt::Postgres(client.cancel_token(), tls));
     tokio::spawn(async move {
@@ -170,7 +258,7 @@ pub async fn connect(input: &ConnectionInput) -> Result<Client, AppError> {
             eprintln!("postgres connection closed with error: {e}");
         }
     });
-    client.simple_query("SELECT 1").await?;
+    client.simple_query("SELECT 1").await.map_err(Open::Pg)?;
     Ok(client)
 }
 
@@ -273,5 +361,45 @@ mod tests {
         let (url, mode) = extract_url_ssl_mode("postgres://u@h/db");
         assert_eq!(url, "postgres://u@h/db");
         assert_eq!(mode, None);
+    }
+
+    fn pg_input() -> ConnectionInput {
+        ConnectionInput {
+            host: Some("DB.Example".into()),
+            database: Some("shop".into()),
+            user: Some("app".into()),
+            password: Some("pw".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sessions_are_read_only() {
+        assert_eq!(with_read_only(None), "-c default_transaction_read_only=on");
+        assert_eq!(with_read_only(Some("  ")), "-c default_transaction_read_only=on");
+        assert_eq!(with_read_only(Some("-c search_path=app")), "-c search_path=app -c default_transaction_read_only=on");
+        let (config, _) = build_config(&pg_input(), true).unwrap();
+        assert_eq!(config.get_options(), Some("-c default_transaction_read_only=on"));
+        let (config, _) = build_config(&pg_input(), false).unwrap();
+        assert_eq!(config.get_options(), None);
+        let url = ConnectionInput { url: Some("postgres://u:p@h/db?options=-c%20search_path%3Dapp".into()), ..Default::default() };
+        let (config, _) = build_config(&url, true).unwrap();
+        assert_eq!(config.get_options(), Some("-c search_path=app -c default_transaction_read_only=on"));
+    }
+
+    #[test]
+    fn password_binding_names_the_server() {
+        let a = password_binding(&pg_input());
+        assert_eq!(a, "postgres|db.example|5432|shop|app|");
+        assert_eq!(password_binding(&ConnectionInput { port: Some(5432), ..pg_input() }), a, "default port");
+        assert_ne!(password_binding(&ConnectionInput { host: Some("attacker.example".into()), ..pg_input() }), a);
+        assert_ne!(password_binding(&ConnectionInput { engine: Engine::Mysql, ..pg_input() }), a);
+    }
+
+    #[test]
+    fn debug_hides_secrets() {
+        let printed = format!("{:?}", ConnectionInput { url: Some("postgres://u:hunter2@h/db".into()), ..pg_input() });
+        assert!(!printed.contains("hunter2"), "{printed}");
+        assert!(!printed.contains("\"pw\""), "{printed}");
     }
 }

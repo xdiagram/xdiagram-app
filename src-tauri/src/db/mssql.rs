@@ -34,19 +34,9 @@ pub async fn connect(input: &ConnectionInput) -> Result<MsClient, AppError> {
         }
     };
     config.application_name("xdiagram");
-    match input.ssl_mode.unwrap_or_default() {
-        SslMode::Disable => config.encryption(EncryptionLevel::NotSupported),
-        SslMode::Prefer => {
-            config.encryption(EncryptionLevel::On);
-            config.trust_cert();
-        }
-        SslMode::Require => {
-            config.encryption(EncryptionLevel::Required);
-            config.trust_cert();
-        }
-        SslMode::VerifyFull => config.encryption(EncryptionLevel::Required),
-    }
-    if input.trust_cert {
+    let (encryption, trust) = tls_settings(input.ssl_mode.unwrap_or_default());
+    config.encryption(encryption);
+    if trust {
         config.trust_cert();
     }
     // Through a tunnel only the socket changes: TLS still names (and can verify) the real host.
@@ -65,6 +55,26 @@ pub async fn connect(input: &ConnectionInput) -> Result<MsClient, AppError> {
     let mut client = Client::connect(config, tcp.compat_write()).await?;
     client.simple_query("SELECT 1").await?.into_results().await?;
     Ok(client)
+}
+
+/// Encryption level, and whether to accept the certificate unchecked. Like libpq's modes:
+/// `prefer` and `require` encrypt without checking (self-signed servers work), and `verify-full`
+/// always checks the certificate and host name. (Older profiles carry a "trust server
+/// certificate" flag; it only ever disabled the `verify-full` check, so it is ignored.)
+fn tls_settings(mode: SslMode) -> (EncryptionLevel, bool) {
+    match mode {
+        SslMode::Disable => (EncryptionLevel::NotSupported, false),
+        SslMode::Prefer => (EncryptionLevel::On, true),
+        SslMode::Require => (EncryptionLevel::Required, true),
+        SslMode::VerifyFull => (EncryptionLevel::Required, false),
+    }
+}
+
+/// A read blocked by another session's locks gives up on the server after `timeout_s`, instead
+/// of holding locks there after the app stopped waiting.
+async fn limit_lock_wait(client: &mut MsClient, timeout_s: u64) -> Result<(), AppError> {
+    client.simple_query(format!("SET LOCK_TIMEOUT {}", timeout_s.saturating_mul(1000).min(i32::MAX as u64))).await?.into_results().await?;
+    Ok(())
 }
 
 async fn rows(client: &mut MsClient, sql: &str, params: &[&dyn ToSql]) -> Result<Vec<Row>, AppError> {
@@ -394,6 +404,7 @@ pub async fn row_estimate(client: &mut MsClient, schema: &str, table: &str) -> R
 /// Runs one SELECT whose columns are all NVARCHAR (see `Dialect::select_text`), with a time limit.
 /// Only generated SELECTs reach this; SQL Server has no read-only transaction mode to add.
 pub async fn fetch_text(client: &mut MsClient, sql: &str, params: &[String], timeout_s: u64) -> Result<Vec<Vec<Option<String>>>, AppError> {
+    limit_lock_wait(client, timeout_s).await?;
     let values: Vec<&dyn ToSql> = params.iter().map(|v| v as &dyn ToSql).collect();
     let result = tokio::time::timeout(Duration::from_secs(timeout_s), rows(client, sql, &values))
         .await
@@ -456,9 +467,11 @@ pub async fn browse(client: &mut MsClient, req: &BrowseRequest) -> Result<Browse
     sql.push_str(&format!(" ORDER BY {keys} OFFSET {} ROWS FETCH NEXT {} ROWS ONLY", req.offset, limit + 1));
 
     let params: Vec<&dyn ToSql> = values.iter().map(|v| v as &dyn ToSql).collect();
-    let result = tokio::time::timeout(Duration::from_secs(req.timeout() as u64), rows(client, &sql, &params))
+    let timeout_s = req.timeout() as u64;
+    limit_lock_wait(client, timeout_s).await?;
+    let result = tokio::time::timeout(Duration::from_secs(timeout_s), rows(client, &sql, &params))
         .await
-        .map_err(|_| AppError::Invalid("SQL Server: the query took longer than 10 s".into()))??;
+        .map_err(|_| AppError::Invalid(format!("SQL Server: the query took longer than {timeout_s} s")))??;
     let estimate = row_estimate(client, &schema_name, &req.table).await?;
 
     let has_more = result.len() > limit as usize;
@@ -492,6 +505,14 @@ pub async fn browse(client: &mut MsClient, req: &BrowseRequest) -> Result<Browse
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verify_full_always_checks_the_certificate() {
+        assert!(matches!(tls_settings(SslMode::VerifyFull), (EncryptionLevel::Required, false)));
+        assert!(matches!(tls_settings(SslMode::Require), (EncryptionLevel::Required, true)));
+        assert!(matches!(tls_settings(SslMode::Prefer), (EncryptionLevel::On, true)));
+        assert!(matches!(tls_settings(SslMode::Disable), (EncryptionLevel::NotSupported, false)));
+    }
 
     #[test]
     fn types() {

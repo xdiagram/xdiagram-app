@@ -65,8 +65,8 @@ export class ConnectionDialogComponent implements OnInit {
   protected sslModes(): { value: SslMode; label: string }[] {
     if (this.draft.engine === "mssql") {
       return [
-        { value: "prefer", label: "Encrypt if the server supports it" },
-        { value: "require", label: "Always encrypt" },
+        { value: "prefer", label: "Encrypt if the server supports it (not verified)" },
+        { value: "require", label: "Always encrypt (not verified)" },
         { value: "verify-full", label: "Encrypt + verify the certificate" },
         { value: "disable", label: "No encryption" },
       ];
@@ -132,7 +132,6 @@ export class ConnectionDialogComponent implements OnInit {
       port: !d.port || d.port === before.port ? after.port : d.port,
       user: !d.user || d.user === before.user ? after.user : d.user,
       database: d.database === before.database ? after.database : d.database,
-      trustCert: engine === "mssql" ? d.trustCert || d.engine !== "mssql" : d.trustCert,
       schemas: [],
     };
     this.availableSchemas.set([]);

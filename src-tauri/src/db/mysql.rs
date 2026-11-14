@@ -63,11 +63,24 @@ pub async fn connect(input: &ConnectionInput) -> Result<Conn, AppError> {
         SslMode::VerifyFull => Conn::new(opts(input, Some(SslOpts::default()), via)?).await?,
         SslMode::Prefer => match Conn::new(opts(input, Some(lax()), via)?).await {
             Ok(c) => c,
-            Err(_) => Conn::new(opts(input, None, via)?).await?,
+            // Only a TLS problem means "try without": a wrong password must not be resent in plain text.
+            Err(e) if is_tls_failure(&e) => Conn::new(opts(input, None, via)?).await?,
+            Err(e) => return Err(e.into()),
         },
     };
     conn.query_drop("SELECT 1").await?;
+    // The whole session is read-only, on top of the read-only transactions data reads use.
+    // Servers older than MySQL 5.6.5 lack the statement; their data reads fail on their own.
+    let _ = conn.query_drop("SET SESSION TRANSACTION READ ONLY").await;
     Ok(conn)
+}
+
+/// The server has no TLS, or the TLS handshake failed.
+fn is_tls_failure(e: &mysql_async::Error) -> bool {
+    matches!(
+        e,
+        mysql_async::Error::Driver(mysql_async::DriverError::NoClientSslFlagFromServer) | mysql_async::Error::Io(mysql_async::IoError::Tls(_))
+    )
 }
 
 pub async fn version(conn: &mut Conn) -> Result<String, AppError> {
@@ -524,6 +537,14 @@ pub async fn browse(conn: &mut Conn, req: &BrowseRequest) -> Result<BrowseResult
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn falls_back_to_plain_text_only_for_tls_failures() {
+        use mysql_async::{DriverError, Error, IoError};
+        assert!(is_tls_failure(&Error::Driver(DriverError::NoClientSslFlagFromServer)));
+        assert!(!is_tls_failure(&Error::Driver(DriverError::ConnectionClosed)));
+        assert!(!is_tls_failure(&Error::Io(IoError::Io(std::io::Error::other("refused")))));
+    }
 
     #[test]
     fn types_and_enums() {

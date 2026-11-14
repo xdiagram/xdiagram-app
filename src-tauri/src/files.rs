@@ -1,6 +1,8 @@
 //! Text files the user works on: an allow-list of paths, saving back to them, and watching them
-//! for changes made by other programs. Only paths the user picked in a dialog (or that a previous
-//! session reopened) can be written or watched; reads are limited to schema-like extensions.
+//! for changes made by other programs. Only paths the user picked in a dialog can be written or
+//! watched. The writable ones are remembered in `allowed-files.json` (app data folder), so tabs
+//! a later session reopens can still be saved; reading a file by path never adds it. Reads are
+//! limited to schema-like extensions.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -18,6 +20,8 @@ use crate::error::AppError;
 const READABLE: &[&str] = &["dbml", "sql", "ddl", "rb", "txt"];
 /// Files that may be written in place.
 const WRITABLE: &[&str] = &["dbml", "txt"];
+/// How many picked files `allowed-files.json` remembers (the most recent ones).
+const REMEMBERED: usize = 200;
 pub const FILE_CHANGED_EVENT: &str = "xdiagram://file-changed";
 
 #[derive(Clone, Serialize)]
@@ -29,6 +33,8 @@ pub struct FileChanged {
 #[derive(Default)]
 struct Inner {
     allowed: HashSet<PathBuf>,
+    /// Writable picked paths, oldest first: what `allowed-files.json` holds.
+    remembered: Vec<PathBuf>,
     /// Hash of what this app last wrote to a path (its own writes are not "external changes").
     written: HashMap<PathBuf, u64>,
     /// Watched file → number of tabs watching it.
@@ -46,6 +52,8 @@ pub struct FileState {
     notify: Option<Notify>,
     generation: Arc<Mutex<HashMap<PathBuf, u64>>>,
     counter: Arc<AtomicU64>,
+    /// `allowed-files.json`; none in tests that do not need it.
+    persist: Option<PathBuf>,
 }
 
 fn key(path: &Path) -> PathBuf {
@@ -63,23 +71,54 @@ pub fn hash(text: &str) -> u64 {
 }
 
 impl FileState {
-    pub fn new(notify: Option<Notify>) -> Self {
+    /// `persist`: where picked writable paths are remembered across sessions (loaded now).
+    pub fn new(notify: Option<Notify>, persist: Option<PathBuf>) -> Self {
+        let mut inner = Inner::default();
+        if let Some(file) = &persist
+            && let Ok(text) = std::fs::read_to_string(file)
+            && let Ok(paths) = serde_json::from_str::<Vec<PathBuf>>(&text)
+        {
+            inner.allowed.extend(paths.iter().cloned());
+            inner.remembered = paths;
+        }
         FileState {
-            inner: Arc::default(),
+            inner: Arc::new(Mutex::new(inner)),
             watcher: Mutex::new(None),
             notify,
             generation: Arc::default(),
             counter: Arc::default(),
+            persist,
         }
     }
 
-    /// Marks a path the user picked in a dialog as usable.
+    /// Marks a path the user picked in a dialog as usable; writable ones are remembered.
     pub fn allow(&self, path: &Path) {
-        self.inner.lock().unwrap().allowed.insert(key(path));
+        let file = key(path);
+        let mut inner = self.inner.lock().unwrap();
+        inner.allowed.insert(file.clone());
+        if !has_ext(&file, WRITABLE) {
+            return;
+        }
+        inner.remembered.retain(|p| p != &file);
+        inner.remembered.push(file);
+        let excess = inner.remembered.len().saturating_sub(REMEMBERED);
+        inner.remembered.drain(..excess);
+        let list = inner.remembered.clone();
+        drop(inner);
+        if let Some(persist) = &self.persist
+            && let Ok(json) = serde_json::to_vec_pretty(&list)
+        {
+            let _ = crate::fsutil::atomic_write(persist, &json);
+        }
     }
 
     pub fn is_allowed(&self, path: &Path) -> bool {
         self.inner.lock().unwrap().allowed.contains(&key(path))
+    }
+
+    /// Whether `write` would accept the path (else the frontend asks with a save dialog).
+    pub fn can_write(&self, path: &Path) -> bool {
+        has_ext(path, WRITABLE) && self.is_allowed(path)
     }
 
     /// Records content this app wrote, so the watcher does not report it back.
@@ -87,17 +126,16 @@ impl FileState {
         self.inner.lock().unwrap().written.insert(key(path), hash(contents));
     }
 
-    /// Reads a schema file by path (session restore); the path becomes usable afterwards.
+    /// Reads a schema file by path (session restore). It does not make the path writable: only
+    /// a dialog does (see the module comment).
     pub fn read(&self, path: &Path) -> Result<String, AppError> {
         if !has_ext(path, READABLE) {
             return Err(AppError::Invalid(format!("Not a schema file: {}", path.display())));
         }
-        let contents = std::fs::read_to_string(path).map_err(|e| match e.kind() {
+        std::fs::read_to_string(path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => AppError::Invalid(format!("File not found: {}", path.display())),
             _ => e.into(),
-        })?;
-        self.allow(path);
-        Ok(contents)
+        })
     }
 
     pub fn write(&self, path: &Path, contents: &str) -> Result<(), AppError> {
@@ -108,7 +146,7 @@ impl FileState {
             return Err(AppError::Invalid(format!("Open or save {} through a dialog first", path.display())));
         }
         self.record_write(path, contents);
-        std::fs::write(path, contents)?;
+        crate::fsutil::atomic_write(path, contents.as_bytes())?;
         Ok(())
     }
 
@@ -222,7 +260,7 @@ mod tests {
 
     #[test]
     fn writes_only_to_allowed_dbml_files() {
-        let state = FileState::new(None);
+        let state = FileState::new(None, None);
         let path = temp("a.dbml");
         std::fs::write(&path, "Table a {}").unwrap();
         assert!(state.write(&path, "x").is_err(), "not picked in a dialog");
@@ -238,8 +276,39 @@ mod tests {
     }
 
     #[test]
+    fn reading_does_not_make_a_file_writable() {
+        let state = FileState::new(None, None);
+        let path = temp("notes.txt");
+        std::fs::write(&path, "keep me").unwrap();
+        assert_eq!(state.read(&path).unwrap(), "keep me");
+        assert!(!state.can_write(&path));
+        assert!(state.write(&path, "overwritten").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep me");
+    }
+
+    #[test]
+    fn picked_files_stay_writable_in_the_next_session() {
+        let list = temp("allowed-files.json");
+        let _ = std::fs::remove_file(&list);
+        let path = temp("kept.dbml");
+        std::fs::write(&path, "Table a {}").unwrap();
+        let sql = temp("kept.sql");
+        std::fs::write(&sql, "").unwrap();
+        {
+            let state = FileState::new(None, Some(list.clone()));
+            state.allow(&path);
+            state.allow(&sql);
+        }
+        let next = FileState::new(None, Some(list.clone()));
+        assert!(next.can_write(&path));
+        next.write(&path, "Table b {}").unwrap();
+        assert!(!next.is_allowed(&sql), "only writable files are remembered");
+        assert!(!temp("kept.dbml.xdtmp").exists());
+    }
+
+    #[test]
     fn records_its_own_writes() {
-        let state = FileState::new(None);
+        let state = FileState::new(None, None);
         let path = temp("b.dbml");
         std::fs::write(&path, "").unwrap();
         state.allow(&path);
@@ -255,7 +324,7 @@ mod tests {
         let notify: Notify = Arc::new(move |c| {
             let _ = tx.lock().unwrap().send(c);
         });
-        let state = FileState::new(Some(notify));
+        let state = FileState::new(Some(notify), None);
         let path = temp("watched.dbml");
         std::fs::write(&path, "Table a {}").unwrap();
         state.allow(&path);
@@ -274,7 +343,7 @@ mod tests {
 
     #[test]
     fn counts_watchers() {
-        let state = FileState::new(None);
+        let state = FileState::new(None, None);
         let path = temp("c.dbml");
         std::fs::write(&path, "").unwrap();
         assert!(state.watch(&path).is_err());

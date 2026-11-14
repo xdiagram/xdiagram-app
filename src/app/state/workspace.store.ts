@@ -183,11 +183,11 @@ export class WorkspaceStore {
     return this.run("Reading schema…", async (op) => {
       if (password) {
         this.sessionPasswords.set(profile.id, password);
-        if (rememberPassword) await this.api.savePassword(profile.id, password);
+        if (rememberPassword) await this.api.savePassword(profile.id, password, toConnectionInput(profile));
       }
       if (sshSecret && profile.ssh) {
         this.sessionSshSecrets.set(profile.id, sshSecret);
-        if (rememberPassword) await this.api.savePassword(sshSecretId(profile.id), sshSecret);
+        if (rememberPassword) await this.api.savePassword(sshSecretId(profile.id), sshSecret, toConnectionInput(profile));
       }
       const dbml = await this.fetchDbml(profile, op);
       await this.openDocument(dbml, this.dbSource(profile), layoutKeyOf(profile));
@@ -339,6 +339,9 @@ export class WorkspaceStore {
   async save(): Promise<void> {
     const path = watchablePath(this.source());
     if (!path) return this.saveAs();
+    // Only files picked in a dialog are written in place (a tab reopened from an older session
+    // may not be one yet): confirm the destination once with the save dialog.
+    if (!(await this.api.canWrite(path).catch(() => false))) return this.saveAs();
     const text = this.dbml();
     try {
       await this.api.writeTextFile(path, text);

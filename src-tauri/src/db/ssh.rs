@@ -74,6 +74,11 @@ impl SshConfig {
         self.port.unwrap_or(22)
     }
 
+    /// The SSH server a saved secret belongs to (see `secrets`).
+    pub fn binding(&self) -> String {
+        format!("ssh:{}@{}:{}", self.user.trim(), self.host.trim().to_ascii_lowercase(), self.port())
+    }
+
     fn label(&self) -> String {
         if self.port() == 22 {
             format!("{}@{}", self.user, self.host)
@@ -187,7 +192,7 @@ fn resolve_secret(ssh: &SshConfig, profile_id: Option<&str>) -> Result<Option<St
         return Ok(Some(s.to_string()));
     }
     match profile_id.filter(|id| !id.is_empty()) {
-        Some(id) => secrets::get_password(&format!("ssh:{id}")),
+        Some(id) => secrets::load_bound(&format!("ssh:{id}"), &ssh.binding()),
         None => Ok(None),
     }
 }

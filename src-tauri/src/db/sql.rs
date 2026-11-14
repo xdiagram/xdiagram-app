@@ -120,7 +120,8 @@ impl Dialect {
                 hex.len() == 32 && hex.chars().all(|c| c.is_ascii_hexdigit())
             }
             Some(Key::Bit) => matches!(value.to_ascii_lowercase().as_str(), "0" | "1" | "true" | "false"),
-            Some(Key::Binary) => value.len() % 2 == 0 && value.len() > 2 && value[..2].eq_ignore_ascii_case("0x") && value[2..].chars().all(|c| c.is_ascii_hexdigit()),
+            // `get` rather than slicing: the value is row data and may start with a multi-byte character.
+            Some(Key::Binary) => value.len().is_multiple_of(2) && value.len() > 2 && value.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("0x")) && value.get(2..).is_some_and(|h| h.chars().all(|c| c.is_ascii_hexdigit())),
             _ => true,
         }
     }
@@ -291,6 +292,10 @@ mod tests {
         assert!(!Mssql.value_fits("uniqueidentifier", "nope"));
         assert!(Mssql.value_fits("varbinary", "0x0A1B"));
         assert!(!Mssql.value_fits("varbinary", "0A1B"));
+        // Non-ASCII values must not panic (byte slicing would cut a character in half).
+        assert!(!Mssql.value_fits("varbinary", "€0"));
+        assert!(!Mssql.value_fits("varbinary", "0x€0"));
+        assert!(!Mssql.value_fits("varbinary", "é1"));
         assert!(!Mssql.value_fits("bit", "2"));
         assert!(Postgres.value_fits("integer", "abc"));
     }

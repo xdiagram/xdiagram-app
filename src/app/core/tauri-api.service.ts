@@ -18,8 +18,6 @@ export interface ConnectionInput {
   engine?: Engine;
   /** SQLite database file. */
   path?: string;
-  /** SQL Server: accept the server certificate without validation. */
-  trustCert?: boolean;
   url?: string;
   host?: string;
   port?: number;
@@ -319,6 +317,16 @@ export class TauriApi {
     return invoke("write_text_file", { path, contents });
   }
 
+  /** Whether `writeTextFile` accepts the path (it must have been picked in a dialog). */
+  canWrite(path: string): Promise<boolean> {
+    return invoke("can_write", { path });
+  }
+
+  /** App files found damaged and restored at start-up (reported once). */
+  startupNotices(): Promise<string[]> {
+    return invoke("startup_notices");
+  }
+
   watchFile(path: string): Promise<void> {
     return invoke("watch_file", { path });
   }
@@ -401,8 +409,9 @@ export class TauriApi {
     return this.db("introspect", { input, schemas, opId });
   }
 
-  savePassword(profileId: string, password: string): Promise<void> {
-    return invoke("save_password", { profileId, password });
+  /** Saves a password bound to the server in `input` (Rust refuses it for any other server). */
+  savePassword(profileId: string, password: string, input: ConnectionInput): Promise<void> {
+    return invoke("save_password", { profileId, password, input });
   }
 
   deletePassword(profileId: string): Promise<void> {

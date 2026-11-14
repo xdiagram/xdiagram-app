@@ -116,9 +116,16 @@ pub fn stop_live(state: tauri::State<'_, LiveState>) {
     state.stop();
 }
 
+/// Saves a password (or, for `ssh:<profile id>`, an SSH secret) bound to the server in `input`:
+/// it is only ever used again for a connection to that same server.
 #[tauri::command]
-pub fn save_password(profile_id: String, password: String) -> Result<(), AppError> {
-    secrets::set_password(&profile_id, &password)
+pub fn save_password(profile_id: String, password: String, input: ConnectionInput) -> Result<(), AppError> {
+    let bind = if profile_id.starts_with("ssh:") {
+        input.ssh.as_ref().map(db::ssh::SshConfig::binding).ok_or_else(|| AppError::Invalid("This connection has no SSH settings".into()))?
+    } else {
+        db::connect::password_binding(&input)
+    };
+    secrets::save_bound(&profile_id, &password, &bind)
 }
 
 #[tauri::command]
@@ -128,7 +135,7 @@ pub fn delete_password(profile_id: String) -> Result<(), AppError> {
 
 #[tauri::command]
 pub fn has_password(profile_id: String) -> Result<bool, AppError> {
-    Ok(secrets::get_password(&profile_id)?.is_some())
+    secrets::has_secret(&profile_id)
 }
 
 /// Asks for a destination with the native save dialog, then writes `contents`
@@ -163,7 +170,10 @@ pub async fn save_file(
     if let Some(text) = &text {
         files.record_write(&path, text);
     }
-    tokio::fs::write(&path, bytes).await?;
+    let target = path.clone();
+    tokio::task::spawn_blocking(move || crate::fsutil::atomic_write(&target, &bytes))
+        .await
+        .map_err(|e| AppError::Invalid(e.to_string()))??;
     files.allow(&path);
     Ok(Some(path.to_string_lossy().into_owned()))
 }
@@ -216,10 +226,23 @@ pub fn read_text_file(files: tauri::State<'_, FileState>, path: String) -> Resul
     files.read(std::path::Path::new(&path))
 }
 
-/// Saves a .dbml file in place; only files opened or saved through a dialog (or reopened) qualify.
+/// Saves a .dbml file in place; only files opened or saved through a dialog qualify.
 #[tauri::command]
 pub fn write_text_file(files: tauri::State<'_, FileState>, path: String, contents: String) -> Result<(), AppError> {
     files.write(std::path::Path::new(&path), &contents)
+}
+
+/// Whether `write_text_file` would accept the path; when it would not, the frontend saves
+/// through a dialog instead.
+#[tauri::command]
+pub fn can_write(files: tauri::State<'_, FileState>, path: String) -> bool {
+    files.can_write(std::path::Path::new(&path))
+}
+
+/// Messages about app files that were damaged and restored at start-up (each is reported once).
+#[tauri::command]
+pub fn startup_notices(notices: tauri::State<'_, crate::StartupNotices>) -> Vec<String> {
+    std::mem::take(&mut *notices.0.lock().unwrap())
 }
 
 /// Reports changes other programs make to an open file (`xdiagram://file-changed`).

@@ -17,8 +17,6 @@ export interface ConnectionProfile {
   schemas: string[];
   /** SQLite database file. */
   path: string;
-  /** SQL Server: accept the server certificate without validation. */
-  trustCert: boolean;
   /** Reach the database through this SSH server (null: connect directly). */
   ssh: SshSettings | null;
 }
@@ -75,7 +73,6 @@ export function newProfile(engine: Engine = "postgres"): ConnectionProfile {
     sslMode: "prefer",
     schemas: [],
     path: "",
-    trustCert: engine === "mssql",
     ssh: null,
   };
 }
@@ -87,7 +84,6 @@ export function normalizeProfile(p: Partial<ConnectionProfile> & { id: string })
     ...p,
     engine: p.engine ?? "postgres",
     path: p.path ?? "",
-    trustCert: p.trustCert ?? false,
     ssh: p.ssh ? { ...newSsh(), ...p.ssh } : null,
   };
 }
@@ -117,7 +113,6 @@ export function toConnectionInput(p: ConnectionProfile, password?: string, sshSe
     database: p.database,
     user: p.user,
     sslMode: p.sslMode,
-    trustCert: p.trustCert,
     profileId: p.id,
     password: password || undefined,
     ssh: p.ssh
@@ -184,6 +179,8 @@ export class ProfilesService {
   private readonly store = new LazyStore("connections.json", { autoSave: false, defaults: {} });
   readonly profiles = signal<ConnectionProfile[]>([]);
   private loaded: Promise<void> | null = null;
+  /** The file could not be read: saving would replace every saved connection, so it is refused. */
+  private loadFailed = false;
 
   constructor(private readonly api: TauriApi) {}
 
@@ -191,12 +188,23 @@ export class ProfilesService {
     this.loaded ??= this.store
       .get<ConnectionProfile[]>("profiles")
       .then((list) => this.profiles.set((list ?? []).map(normalizeProfile)))
-      .catch(() => this.profiles.set([]));
+      .catch((err) => {
+        console.error("Could not read saved connections", err);
+        this.loadFailed = true;
+        this.profiles.set([]);
+      });
     return this.loaded;
+  }
+
+  private assertWritable(): void {
+    if (this.loadFailed) {
+      throw new Error("Saved connections could not be read, so nothing was changed (the file is kept as it is). Restart xdiagram to try again.");
+    }
   }
 
   async upsert(profile: ConnectionProfile): Promise<void> {
     await this.load();
+    this.assertWritable();
     const list = this.profiles();
     const i = list.findIndex((p) => p.id === profile.id);
     const next = i >= 0 ? list.map((p, j) => (j === i ? profile : p)) : [...list, profile];
@@ -207,6 +215,7 @@ export class ProfilesService {
 
   async remove(id: string): Promise<void> {
     await this.load();
+    this.assertWritable();
     const next = this.profiles().filter((p) => p.id !== id);
     this.profiles.set(next);
     await this.store.set("profiles", next);

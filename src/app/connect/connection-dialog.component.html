@@ -141,11 +141,12 @@
         <input type="checkbox" name="remember" [(ngModel)]="rememberPassword" />
         <span>Remember {{ draft.ssh ? "passwords" : "password" }} in the system keychain</span>
       </label>
-      @if (draft.engine === "mssql") {
-        <label class="check">
-          <input type="checkbox" name="trustCert" [(ngModel)]="draft.trustCert" />
-          <span>Trust the server certificate (self-signed servers)</span>
-        </label>
+      @if (draft.engine === "mssql" && draft.sslMode !== "disable") {
+        <p class="hint">
+          {{ draft.sslMode === "verify-full"
+            ? "The certificate and host name are checked against public certificate authorities."
+            : "Self-signed certificates are accepted. Choose “verify” to check the certificate." }}
+        </p>
       }
     }
 

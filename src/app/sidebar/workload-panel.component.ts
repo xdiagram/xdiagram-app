@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, inject } from "@angular/core";
 
 import { displayTable } from "../diagram/view-model";
+import { sqlComment } from "../export/sql-comment";
 import { WorkloadStore } from "../state/workload.store";
 import { WorkspaceStore } from "../state/workspace.store";
 
@@ -228,7 +229,8 @@ export class WorkloadPanelComponent {
       "-- CREATE/DROP INDEX CONCURRENTLY cannot run inside a transaction block.",
       "",
     ];
-    for (const a of items) lines.push(`-- [${this.kindLabel(a.kind)}] ${a.reason}`, a.sql, "");
+    // Reasons name tables and indexes, which may contain line breaks.
+    for (const a of items) lines.push(sqlComment(`[${this.kindLabel(a.kind)}] ${a.reason}`), a.sql, "");
     void this.workload.saveSql("index-suggestions.sql", lines.join("\n"));
   }
 

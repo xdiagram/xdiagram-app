@@ -2,11 +2,16 @@ mod commands;
 pub mod db;
 pub mod error;
 mod files;
+mod fsutil;
 mod live;
 mod ops;
 mod secrets;
 
 use tauri::Manager;
+
+/// What the start-up checks of the app's files found (see `fsutil::recover_json_files`).
+#[derive(Default)]
+pub struct StartupNotices(pub std::sync::Mutex<Vec<String>>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -18,14 +23,18 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(live::LiveState::default())
         .setup(|app| {
+            // First, before any command runs (so before the store plugin reads its files).
+            let data_dir = app.path().app_data_dir().ok();
+            let notices = data_dir.as_deref().map(|dir| fsutil::recover_json_files(dir, fsutil::STORE_FILES)).unwrap_or_default();
+            app.manage(StartupNotices(std::sync::Mutex::new(notices)));
+
             let handle = app.handle().clone();
             let notify: files::Notify = std::sync::Arc::new(move |change| {
                 use tauri::Emitter;
                 let _ = handle.emit(files::FILE_CHANGED_EVENT, change);
             });
-            app.manage(files::FileState::new(Some(notify)));
-            use tauri::Manager;
-            if let Ok(dir) = app.path().app_data_dir() {
+            app.manage(files::FileState::new(Some(notify), data_dir.as_ref().map(|dir| dir.join("allowed-files.json"))));
+            if let Some(dir) = &data_dir {
                 db::ssh::init_known_hosts(dir.join("known_hosts"));
             }
             Ok(())
@@ -59,6 +68,8 @@ pub fn run() {
             commands::pick_file,
             commands::read_text_file,
             commands::write_text_file,
+            commands::can_write,
+            commands::startup_notices,
             commands::watch_file,
             commands::unwatch_file,
         ])

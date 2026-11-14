@@ -4,7 +4,7 @@ import { ConnectionDialogComponent } from "./connect/connection-dialog.component
 import { loadDbmlCore } from "./core/dbml";
 import { DiagramComponent } from "./diagram/diagram.component";
 import { displayTable } from "./diagram/view-model";
-import type { Engine } from "./core/tauri-api.service";
+import { type Engine, TauriApi } from "./core/tauri-api.service";
 import { engineInfo } from "./persistence/profiles.service";
 import { DbmlEditorComponent } from "./editor/dbml-editor.component";
 import { DataDrawerComponent } from "./data/data-drawer.component";
@@ -103,6 +103,7 @@ export class AppComponent {
   /** Created at start so the chosen theme applies everywhere. */
   private readonly theme = inject(ThemeService);
   protected readonly tabs = inject(TabsStore);
+  private readonly api = inject(TauriApi);
   /** X-ray reads PostgreSQL statistics views, so it is only offered for PostgreSQL connections. */
   protected readonly xrayAvailable = computed(() => {
     const src = this.store.source();
@@ -178,8 +179,16 @@ export class AppComponent {
   constructor() {
     // Start fetching the (large, lazy) DBML parser chunk right away.
     void loadDbmlCore();
-    // Reopen the last session's tabs (when enabled in Settings).
-    void this.tabs.restoreSession();
+    // Reopen the last session's tabs (when enabled in Settings), then report app files that
+    // were damaged and restored at start-up (after the restore, which clears the error banner).
+    void this.tabs
+      .restoreSession()
+      .catch(() => undefined)
+      .then(() => this.api.startupNotices())
+      .then((notices) => {
+        if (notices.length) this.store.error.set(notices.join("\n"));
+      })
+      .catch(() => undefined);
     // New versions (checked shortly after start, when enabled and configured).
     void this.updates.init();
     // Unsaved edits are not lost by closing the window.

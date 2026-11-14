@@ -7,10 +7,12 @@ every change made on the canvas is an edit to it.
 
 - **Connect** to PostgreSQL, MySQL / MariaDB, SQL Server or a SQLite file.
   - Use the form or paste a URL: `postgres://`, `mysql://`, `mariadb://`, `sqlserver://`, `mssql://` or `sqlite:path`.
-  - Options include SSL / encryption modes and, on SQL Server, "trust server certificate".
+  - SSL / encryption modes work like libpq's: `prefer` and `require` encrypt without checking the
+    certificate (self-signed servers work), and `verify-full` checks the certificate and host name.
   - PostgreSQL and SQL Server have a schema filter.
   - **SSH tunnels** to reach databases behind a bastion host: password or private key (see below).
-  - Profiles are saved in the app data dir. If you choose to remember the password, it goes to the OS keychain.
+  - Profiles are saved in the app data dir. If you choose to remember the password, it goes to the OS keychain,
+    tied to the server it was typed for: it is never sent to a different host, port, database or user.
 - **Tabs**: several databases and files open at once (Ctrl+T, Ctrl+W, Ctrl+Tab). Each tab keeps
   its own undo history. Opening something that is already open switches to its tab.
 - **Sessions**: the open tabs come back on the next start (Settings). A database tab reconnects when
@@ -102,6 +104,27 @@ every change made on the canvas is an edit to it.
 Everything is read-only against the database. SQL the app generates (DDL, sample data, index
 advice) is shown, copied or saved, never executed. The query builder only runs the read-only
 SELECTs it builds itself.
+
+- **PostgreSQL** sessions start with `default_transaction_read_only=on`, and data reads also run in
+  `READ ONLY` transactions with a statement timeout. Behind a pooler that refuses startup options
+  (PgBouncer), the session option is left out and the read-only transactions remain.
+- **MySQL / MariaDB** sessions are `SET SESSION TRANSACTION READ ONLY`, and data reads run in
+  `START TRANSACTION READ ONLY` with `MAX_EXECUTION_TIME`.
+- **SQL Server** has no read-only session mode: the guarantee is that only generated SELECTs run.
+  Reads set `LOCK_TIMEOUT` to the query time limit. For extra safety, connect with a login that
+  only has `db_datareader`.
+- **SQLite** files are opened read-only.
+- Cancelling stops the statement on the server for PostgreSQL and SQLite. For MySQL and SQL
+  Server the connection is closed, and the server ends the statement when it notices.
+
+App safety:
+
+- A content security policy limits the window to the app's own scripts.
+- `.dbml` files are written in place only if they were picked in an open or save dialog (also in
+  later sessions); reopening a tab by path never makes a file writable.
+- Saves go to a temporary file that then replaces the original, so a crash never leaves half a
+  file. The app's own settings files are checked at start-up and restored from the previous
+  start's copy if one was damaged.
 
 ## SQL DDL import and export
 

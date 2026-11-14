@@ -25,7 +25,8 @@ describe("connection profiles", () => {
     expect(profileLabel(lite)).toBe("shop.db");
     const ms = newProfile("mssql");
     expect(ms.port).toBe(1433);
-    expect(toConnectionInput(ms, "pw")).toMatchObject({ engine: "mssql", trustCert: true, password: "pw" });
+    expect(toConnectionInput(ms, "pw")).toMatchObject({ engine: "mssql", password: "pw" });
+    expect(toConnectionInput(ms, "pw")).not.toHaveProperty("trustCert");
   });
   it("carries SSH tunnel settings into the connection input", () => {
     // profiles saved before SSH support have none
