@@ -1,6 +1,10 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from "@angular/core";
 
 import { displayTable, type VRef } from "../diagram/view-model";
+import { QUICK_HELP } from "../filter/help";
+import { printQuick } from "../filter/quick-syntax";
+import { nodeText } from "../filter/printer";
+import { hasActive, singleColumn } from "../filter/tree";
 import { BrowseLocation, BrowserStore } from "../state/browser.store";
 import { ProfileViewComponent } from "./profile-view.component";
 import { QueryViewComponent } from "./query-view.component";
@@ -83,7 +87,7 @@ function readHeight(): number {
             <tr>
               <th class="act"></th>
               @for (c of r.columns; track c.name) {
-                <th (click)="store.sortBy(c.name)" [title]="c.typeName + ' — click to sort'">
+                <th (click)="store.toggleSort(c.name, $event.shiftKey)" [title]="c.typeName + ' — click to sort, Shift+click to sort by several columns'">
                   <span class="cname">{{ c.name }}</span>
                   @if (sortMark(c.name); as mark) {
                     <span class="sort">{{ mark }}</span>
@@ -96,9 +100,11 @@ function readHeight(): number {
               <th class="act"></th>
               @for (c of r.columns; track c.name) {
                 <th>
-                  <input type="text" [value]="filterText(c.name)" placeholder="=" spellcheck="false"
+                  @let ft = filterText(c.name);
+                  <input type="text" [value]="ft ?? ''" [placeholder]="ft === null ? '(filtered)' : 'filter'" spellcheck="false"
+                    [class.issue]="hasIssue(c.name)" [title]="quickHelp"
                     (keydown.enter)="applyFilter(c.name, $any($event.target).value)"
-                    [attr.aria-label]="'Filter ' + c.name + ' (Enter; empty clears, NULL for null)'" />
+                    [attr.aria-label]="'Filter ' + c.name + ' (Enter applies; empty clears)'" />
                 </th>
               }
             </tr>
@@ -116,20 +122,27 @@ function readHeight(): number {
                 </td>
                 @for (cell of row; track $index; let ci = $index) {
                   @let fk = fkAt(ci);
-                  <td [class.null]="cell === null" [class.fk]="!!fk && cell !== null" [title]="cell ?? 'NULL'"
+                  <td [class.null]="cell === null" [class.fk]="!!fk && cell !== null && !isCut(ri, ci)" [class.cut]="isCut(ri, ci)"
+                    [title]="isCut(ri, ci) ? 'Shortened: the full value has more than 4000 characters' : (cell ?? 'NULL')"
                     (click)="onCell(ri, ci, fk)" (contextmenu)="openRowMenu($event, ri, ci)">{{ cell ?? "NULL" }}</td>
                 }
               </tr>
             } @empty {
-              <tr><td class="none" [attr.colspan]="r.columns.length + 1">No rows{{ store.current()?.filters?.length ? " match the filters" : "" }}.</td></tr>
+              <tr><td class="none" [attr.colspan]="r.columns.length + 1">No rows{{ filtered() ? " match the filter" : "" }}.</td></tr>
             }
           </tbody>
         </table>
       </div>
       <footer>
         <span>{{ range() }}</span>
+        @if (countText(); as ct) {
+          <span class="count" [class.muted]="store.count().state !== 'done'">· {{ ct }}</span>
+        }
         @if (r.truncatedCells) {
           <span class="muted">· {{ r.truncatedCells }} long values shortened</span>
+        }
+        @if (r.stableOrder === false) {
+          <span class="muted" title="The table has no primary key: rows with equal sort values may move between pages">· order not unique</span>
         }
         <span class="spacer"></span>
         <span class="muted">click a value to copy it · underlined values follow the foreign key · right-click a row for more</span>
@@ -147,7 +160,7 @@ function readHeight(): number {
         @if (canRelate()) {
           <button type="button" role="menuitem" class="primary" (click)="showRelated(m.row)">⇄ Show related data</button>
         }
-        @let outs = followable(rec);
+        @let outs = followable(rec, m.row);
         @if (outs.length) {
           <div class="ref-title">References</div>
           @for (ref of outs; track ref.id) {
@@ -216,6 +229,9 @@ function readHeight(): number {
     .sort { margin-left: 4px; color: var(--accent); }
     .filters input { width: 100%; min-width: 60px; box-sizing: border-box; font: inherit; font-size: 11px; font-family: var(--mono);
       border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; background: var(--input-bg); color: var(--text); }
+    .filters input.issue { border-color: var(--danger); }
+    td.cut { color: var(--text-muted); }
+    .count { font-variant-numeric: tabular-nums; }
     td { cursor: copy; }
     td.null { color: var(--text-muted); font-style: italic; }
     td.fk { color: var(--accent); text-decoration: underline; text-decoration-style: dotted; cursor: pointer; }
@@ -302,25 +318,69 @@ export class DataDrawerComponent {
     return `rows ${offset + 1}–${offset + r.rows.length}${r.hasMore ? "" : " (end)"}`;
   });
 
+  protected readonly quickHelp = QUICK_HELP;
+
+  protected readonly filtered = computed(() => hasActive(this.store.current()?.where ?? null));
+
   protected label(loc: BrowseLocation): string {
-    const filters = loc.filters.map((f) => `${f.column}=${f.value ?? "NULL"}`).join(", ");
-    return `${displayTable(loc.tableId)}${filters ? ` [${filters}]` : ""}`;
+    const filter = hasActive(loc.where) ? nodeText(loc.where) : "";
+    const short = filter.length > 60 ? `${filter.slice(0, 59)}…` : filter;
+    return `${displayTable(loc.tableId)}${short ? ` [${short}]` : ""}`;
   }
 
+  /** ▲/▼ for sort keys (numbered when several), · for the key columns added as tie-breaker. */
   protected sortMark(column: string): string | null {
-    const o = this.store.current()?.orderBy;
-    if (o?.column === column) return o.desc ? "▼" : "▲";
-    return !o && this.store.result()?.orderedBy.includes(column) ? "·" : null;
+    const keys = this.store.current()?.sort ?? [];
+    const i = keys.findIndex((k) => k.column === column);
+    if (i >= 0) return `${keys[i].desc ? "▼" : "▲"}${keys.length > 1 ? i + 1 : ""}`;
+    return this.store.result()?.sort?.some((s) => s.column === column && s.tie) ? "·" : null;
   }
 
-  protected filterText(column: string): string {
-    const f = this.store.current()?.filters.find((x) => x.column === column);
-    return f ? (f.value ?? "NULL") : "";
+  /** The column box text: its filter in quick syntax; null when it has one the box cannot show. */
+  protected filterText(column: string): string | null {
+    const where = this.store.current()?.where;
+    if (!where) return "";
+    const nodes = where.items.filter((n) => singleColumn(n) === column && !n.off);
+    if (!nodes.length) return "";
+    return nodes.length === 1 ? printQuick(nodes[0]) : null;
   }
 
   protected applyFilter(column: string, text: string): void {
-    const t = text.trim();
-    this.store.setFilter(column, t === "" ? undefined : t.toUpperCase() === "NULL" ? null : t);
+    this.store.setQuick(column, text);
+  }
+
+  protected hasIssue(column: string): boolean {
+    const where = this.store.current()?.where;
+    const ids = new Set(this.store.issues().map((i) => i.node));
+    return !!where && where.items.some((n) => singleColumn(n) === column && (ids.has(n.id) || (n.t === "group" && n.items.some((i) => ids.has(i.id)))));
+  }
+
+  protected readonly countText = computed(() => {
+    const c = this.store.count();
+    switch (c.state) {
+      case "loading":
+        return "counting…";
+      case "done":
+        return `${c.count.toLocaleString("en-US")}${c.capped ? "+" : ""} matching`;
+      case "timedOut":
+        return "count took too long";
+      case "error":
+        return "count failed";
+      default:
+        return "";
+    }
+  });
+
+  private readonly cut = computed(() => new Set((this.store.result()?.truncatedAt ?? []).map(([r, c]) => `${r}:${c}`)));
+
+  /** The value was shortened: it is not the real value, so it is never followed or filtered by. */
+  protected isCut(row: number, col: number): boolean {
+    return this.cut().has(`${row}:${col}`);
+  }
+
+  private rowHasCut(row: number, columns: string[]): boolean {
+    const r = this.store.result();
+    return !!r && columns.some((c) => this.isCut(row, r.columns.findIndex((x) => x.name === c)));
   }
 
   protected fkAt(index: number): VRef | null {
@@ -337,9 +397,9 @@ export class DataDrawerComponent {
     return this.store.result()?.rows[row]?.[col] ?? null;
   }
 
-  /** Outgoing relationships this row can follow (no NULL in its key). */
-  protected followable(row: Record<string, string | null>): VRef[] {
-    return this.store.outgoing().filter((ref) => ref.from.fields.every((f) => row[f] != null));
+  /** Outgoing relationships this row can follow (no NULL, and no shortened value, in its key). */
+  protected followable(row: Record<string, string | null>, index = -1): VRef[] {
+    return this.store.outgoing().filter((ref) => ref.from.fields.every((f) => row[f] != null) && !this.rowHasCut(index, ref.from.fields));
   }
 
   protected showRelated(rowIndex: number): void {
@@ -394,7 +454,7 @@ export class DataDrawerComponent {
 
   protected onCell(rowIndex: number, colIndex: number, fk: VRef | null): void {
     const value = this.store.result()?.rows[rowIndex]?.[colIndex] ?? null;
-    if (fk && value !== null) {
+    if (fk && value !== null && !this.isCut(rowIndex, colIndex)) {
       this.store.followOutgoing(fk, this.rowRecord(rowIndex));
     } else if (value !== null) {
       void navigator.clipboard?.writeText(value).then(() => this.workspace.flash("Value copied"));

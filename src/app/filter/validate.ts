@@ -1,4 +1,5 @@
-import type { ColKind } from "../core/tauri-api.service";
+import type { ColKind, FilterIssue } from "../core/tauri-api.service";
+import { type FilterNode, LIMITS } from "./model";
 
 /** `YYYY-MM-DD` that is a real calendar date. */
 export function isDate(v: string): boolean {
@@ -58,4 +59,21 @@ export function checkValue(kind: ColKind, value: string): string | null {
     default:
       return null;
   }
+}
+
+/** Conditions whose values cannot match their column (checked before anything is sent). */
+export function treeIssues(node: FilterNode, kindOfColumn: (column: string) => ColKind | null): FilterIssue[] {
+  if (node.off) return [];
+  if (node.t === "group") return node.items.flatMap((i) => treeIssues(i, kindOfColumn));
+  const kind = kindOfColumn(node.column);
+  if (!kind) return [];
+  if (node.op === "in" || node.op === "notIn") {
+    if (node.args.length > LIMITS.list) return [{ node: node.id, message: `A list can hold ${LIMITS.list} values at most` }];
+  }
+  for (const a of node.args) {
+    if (typeof a !== "string") continue;
+    const message = ["contains", "notContains", "startsWith", "endsWith", "regex"].includes(node.op) ? null : checkValue(kind, a);
+    if (message) return [{ node: node.id, message }];
+  }
+  return [];
 }

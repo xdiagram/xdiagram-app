@@ -208,6 +208,8 @@ impl Dialect {
             }
             ColKind::Date => match parse_date(v) {
                 Some(d) if v.len() == 10 => Ok(d),
+                // A timestamp at midnight is that date (period bounds sent before the kinds are known).
+                Some(d) if parse_timestamp(v).is_some_and(|t| t.time == "00:00:00" && t.frac.chars().all(|c| c == '0') && t.offset.is_none()) => Ok(d),
                 _ => bad("a date (YYYY-MM-DD)"),
             },
             ColKind::Time => parse_time(v).ok_or(()).or_else(|_| bad("a time (HH:MM:SS)")),
@@ -800,6 +802,7 @@ mod tests {
         assert_eq!(Postgres.check_value(Date, "date", "2024-02-29"), Ok("2024-02-29".into()));
         assert!(Postgres.check_value(Date, "date", "2023-02-29").is_err());
         assert!(Postgres.check_value(Date, "date", "2024-02-29 10:00").is_err());
+        assert_eq!(Postgres.check_value(Date, "date", "2024-02-29 00:00:00"), Ok("2024-02-29".into()));
         assert_eq!(Postgres.check_value(Time, "time without time zone", "9:30"), Err("“9:30” is not a time (HH:MM:SS)".into()));
         assert_eq!(Postgres.check_value(Time, "time without time zone", "09:30"), Ok("09:30:00".into()));
         assert_eq!(Postgres.check_value(Timestamp, "timestamp without time zone", "2026-11-14"), Ok("2026-11-14 00:00:00".into()));

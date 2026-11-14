@@ -6,7 +6,7 @@ import { condLabel, nodeText } from "./printer";
 import { parseQuick, printQuick } from "./quick-syntax";
 import { formatMoment, parsePoint, resolvePoint, resolveSpan } from "./relative-dates";
 import { addNode, emptyRoot, fromEquality, hasActive, removeNode, setColumnFilter, toggleOff, topConds, withoutNav } from "./tree";
-import { checkValue, isTimestamp } from "./validate";
+import { checkValue, isTimestamp, treeIssues } from "./validate";
 import { toWire, wireKey } from "./wire";
 
 const cond = (n: FilterNode | null) => n as CondNode;
@@ -49,6 +49,19 @@ describe("value checks (same rules as Rust)", () => {
     expect(checkValue("binary", "0x0a1")).toContain("hex");
     expect(checkValue("text", "anything at all")).toBeNull();
     expect(isTimestamp("2026-11-14 25:00")).toBe(false);
+  });
+
+  it("finds the conditions to fix before sending", () => {
+    const tree = fromEquality([
+      { column: "id", value: "abc" },
+      { column: "name", value: "anything" },
+      { column: "unknown", value: "x" },
+    ]);
+    tree.items.push({ t: "cond", id: "contains", column: "id", op: "contains", args: ["ab"] });
+    tree.items.push({ t: "cond", id: "off", column: "id", op: "eq", args: ["zz"], off: true });
+    const kinds: Record<string, ColKind> = { id: "int", name: "text" };
+    const issues = treeIssues(tree, (c) => kinds[c] ?? null);
+    expect(issues).toEqual([{ node: tree.items[0].id, message: "“abc” is not a whole number" }]);
   });
 });
 
