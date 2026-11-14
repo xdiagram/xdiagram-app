@@ -102,7 +102,13 @@ pub enum FilterNode {
     /// One column compared with another of the same row (`ends_on < starts_on`). NULL on either
     /// side matches nothing, as in SQL.
     Cols { id: String, left: String, op: Op, right: String },
+    /// Rows whose values in `columns` occur in more than one row of the whole table (not only
+    /// among the filtered rows). A NULL in any of them is not a duplicate.
+    Dup { id: String, columns: Vec<String> },
 }
+
+/// Columns a duplicates condition can take.
+pub const MAX_DUP_COLUMNS: usize = 8;
 
 /// Text-like kinds compare by their text when they differ (an enum with a text column).
 fn text_like(k: ColKind) -> bool {
@@ -145,7 +151,7 @@ pub fn tables_used(node: &FilterNode, out: &mut Vec<(String, String)>) {
                 tables_used(f, out);
             }
         }
-        FilterNode::Cond { .. } | FilterNode::Search { .. } | FilterNode::Cols { .. } => {}
+        FilterNode::Cond { .. } | FilterNode::Search { .. } | FilterNode::Cols { .. } | FilterNode::Dup { .. } => {}
     }
 }
 
@@ -268,7 +274,48 @@ impl Render {
             FilterNode::Search { id, text, columns, cs } => self.search(s, id, text, columns, *cs),
             FilterNode::Rel { id, schema, table, on, quant, filter } => self.rel(s, id, (schema, table), on, *quant, filter.as_deref(), depth),
             FilterNode::Cols { id, left, op, right } => self.cols(s, id, left, *op, right),
+            FilterNode::Dup { id, columns } => self.dup(s, id, columns),
         }
+    }
+
+    /// Rows whose values in `columns` appear in more than one row of the table: a row-value
+    /// `IN (… GROUP BY … HAVING COUNT(*) > 1)`, or on SQL Server (no row values) a correlated count.
+    fn dup(&mut self, s: &Scope, id: &str, columns: &[String]) -> Option<String> {
+        let d = self.d;
+        if columns.is_empty() {
+            return self.issue(id, "Pick the columns whose values repeat");
+        }
+        if columns.len() > MAX_DUP_COLUMNS {
+            return self.issue(id, format!("Duplicates are found over {MAX_DUP_COLUMNS} columns at most"));
+        }
+        // The main table's columns (by name, or as `alias.column` in a join).
+        let mut cols: Vec<&BrowseColumn> = Vec::new();
+        for name in columns {
+            let bare = name.strip_prefix(&format!("{}.", s.alias)).unwrap_or(name);
+            let Some(c) = s.meta.column(name).or_else(|| s.meta.column(bare)) else {
+                return self.issue(id, format!("Unknown column “{name}” (duplicates are found in the table's own columns)"));
+            };
+            let lower = c.type_name.to_ascii_lowercase();
+            if c.kind == ColKind::Json && !lower.contains("jsonb") || d == Dialect::Mssql && matches!(lower.as_str(), "text" | "ntext" | "image" | "xml") {
+                return self.issue(id, format!("Values of “{}” ({}) cannot be compared to find duplicates", c.name, c.type_name));
+            }
+            if !cols.iter().any(|x| x.name == c.name) {
+                cols.push(c);
+            }
+        }
+        self.rels += 1;
+        let inner = d.quote(&format!("_r{}", self.rels));
+        let outer = |c: &BrowseColumn| format!("{}.{}", d.quote(&s.alias), d.quote(&c.name));
+        let own = |c: &BrowseColumn| format!("{inner}.{}", d.quote(&c.name));
+        let from = format!("{} AS {inner}", s.meta.qualified);
+        Some(if d == Dialect::Mssql {
+            let same = cols.iter().map(|c| format!("{} = {}", own(c), outer(c))).collect::<Vec<_>>().join(" AND ");
+            format!("(SELECT COUNT(*) FROM {from} WHERE {same}) > 1")
+        } else {
+            let list = |f: &dyn Fn(&BrowseColumn) -> String| cols.iter().map(|c| f(c)).collect::<Vec<_>>().join(", ");
+            let lhs = if cols.len() == 1 { outer(cols[0]) } else { format!("({})", list(&outer)) };
+            format!("{lhs} IN (SELECT {} FROM {from} GROUP BY {} HAVING COUNT(*) > 1)", list(&own), list(&own))
+        })
     }
 
     /// `left op right` for two columns whose kinds compare; differing text kinds (an enum and a
@@ -550,7 +597,12 @@ fn parenthesize(sql: &str) -> String {
 
 fn node_id(node: &FilterNode) -> &str {
     match node {
-        FilterNode::Group { id, .. } | FilterNode::Cond { id, .. } | FilterNode::Search { id, .. } | FilterNode::Rel { id, .. } | FilterNode::Cols { id, .. } => id,
+        FilterNode::Group { id, .. }
+        | FilterNode::Cond { id, .. }
+        | FilterNode::Search { id, .. }
+        | FilterNode::Rel { id, .. }
+        | FilterNode::Cols { id, .. }
+        | FilterNode::Dup { id, .. } => id,
     }
 }
 
@@ -790,6 +842,52 @@ mod tests {
         assert!(cols("doc", Op::Eq, "doc").is_err(), "JSON has no comparison");
         assert!(cols("n", Op::Contains, "id").is_err());
         assert!(cols("n", Op::Eq, "nope").unwrap_err()[0].message.contains("Unknown column"));
+    }
+
+    #[test]
+    fn duplicates_per_engine() {
+        let dup = |cols: &[&str]| FilterNode::Dup { id: "d".into(), columns: cols.iter().map(|c| c.to_string()).collect() };
+        let pg = meta(Dialect::Postgres, &[("id", "bigint"), ("email", "text"), ("org", "integer"), ("doc", "json"), ("docb", "jsonb")]);
+        assert_eq!(
+            render(Dialect::Postgres, &pg, &dup(&["email"])).unwrap().0,
+            "\"t0\".\"email\" IN (SELECT \"_r1\".\"email\" FROM \"public\".\"t\" AS \"_r1\" GROUP BY \"_r1\".\"email\" HAVING COUNT(*) > 1)"
+        );
+        assert_eq!(
+            render(Dialect::Postgres, &pg, &dup(&["email", "t0.org", "email"])).unwrap().0,
+            "(\"t0\".\"email\", \"t0\".\"org\") IN (SELECT \"_r1\".\"email\", \"_r1\".\"org\" FROM \"public\".\"t\" AS \"_r1\" GROUP BY \"_r1\".\"email\", \"_r1\".\"org\" HAVING COUNT(*) > 1)"
+        );
+        assert!(render(Dialect::Postgres, &pg, &dup(&["docb"])).is_ok(), "jsonb groups");
+        assert!(render(Dialect::Postgres, &pg, &dup(&["doc"])).is_err(), "json does not");
+        assert!(render(Dialect::Postgres, &pg, &dup(&[])).is_err());
+        assert!(render(Dialect::Postgres, &pg, &dup(&["nope"])).is_err());
+        let ms = meta(Dialect::Mssql, &[("id", "int"), ("email", "nvarchar"), ("org", "int"), ("bio", "ntext")]);
+        assert_eq!(
+            render(Dialect::Mssql, &ms, &dup(&["email", "org"])).unwrap().0,
+            "(SELECT COUNT(*) FROM [public].[t] AS [_r1] WHERE [_r1].[email] = [t0].[email] AND [_r1].[org] = [t0].[org]) > 1"
+        );
+        assert!(render(Dialect::Mssql, &ms, &dup(&["bio"])).is_err());
+    }
+
+    /// Duplicates against real rows (SQLite): NULLs are not duplicates.
+    #[test]
+    fn duplicates_on_sqlite() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, email TEXT, org INTEGER);
+             INSERT INTO t VALUES (1, 'a', 1), (2, 'a', 1), (3, 'a', 2), (4, 'b', 1), (5, NULL, 1), (6, NULL, 1);",
+        )
+        .unwrap();
+        let m = crate::db::catalog::sqlite_meta(&conn, "t").unwrap().unwrap();
+        let ids = |cols: &[&str]| -> Vec<i64> {
+            let mut r = Render::new(Dialect::Sqlite);
+            let f = FilterNode::Dup { id: "d".into(), columns: cols.iter().map(|c| c.to_string()).collect() };
+            let sql = where_clause(&mut r, &Scope::new(&m, "t0"), Some(&f)).unwrap().unwrap();
+            let mut st = conn.prepare(&format!("SELECT id FROM t AS \"t0\" WHERE {sql} ORDER BY id")).unwrap();
+            st.query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
+        };
+        assert_eq!(ids(&["email"]), vec![1, 2, 3]);
+        assert_eq!(ids(&["email", "org"]), vec![1, 2]);
+        assert_eq!(ids(&["org"]), vec![1, 2, 4, 5, 6]);
     }
 
     #[test]

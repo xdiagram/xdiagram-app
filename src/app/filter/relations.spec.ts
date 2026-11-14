@@ -1,5 +1,6 @@
 import { parseExpression, printExpression, type RelContext } from "./expression";
 import { comparableKinds } from "./kinds";
+import { presets } from "./presets";
 import type { RelNode } from "./model";
 import { quantText, relOptions, relatedTo, type RefLike } from "./relations";
 import { renameColumns, reId, hasActive } from "./tree";
@@ -55,6 +56,38 @@ describe("a column compared with another", () => {
     const tree = parseExpression("ends_on < `starts_on`");
     expect(renameColumns(tree, (c) => `p.${c}`).items[0]).toMatchObject({ left: "p.ends_on", right: "p.starts_on" });
     expect(toWire(tree, new Date(), () => "date")).toMatchObject({ items: [{ t: "cols", left: "ends_on", op: "lt", right: "starts_on" }] });
+  });
+});
+
+describe("duplicates and data checks", () => {
+  it("writes duplicates as dup(…)", () => {
+    const tree = parseExpression("dup(email, `org id`) and role = admin");
+    expect(tree.items[0]).toMatchObject({ t: "dup", columns: ["email", "org id"] });
+    expect(printExpression(tree)).toBe("dup(email, `org id`) and role = admin");
+    expect(toWire(tree, new Date(), () => "text")).toMatchObject({ items: [{ t: "dup", columns: ["email", "org id"] }, { t: "cond" }] });
+    expect(renameColumns(tree, (c) => `u.${c}`).items[0]).toMatchObject({ columns: ["u.email", "u.org id"] });
+  });
+
+  it("offers checks that fit the table", () => {
+    const cols = [
+      { name: "id", kind: "int" as const },
+      { name: "email", kind: "text" as const },
+      { name: "org_id", kind: "int" as const },
+    ];
+    const list = presets(cols, relOptions("public.users", REFS));
+    expect(list.map((p) => p.label)).toEqual([
+      "Duplicate values…",
+      "Orphans: org_id pointing at no organizations row",
+      "Orphans: manager_id pointing at no users row",
+      "Without any orders.user_id",
+      "Without any orders.approved_by",
+      "Without any users",
+      "Empty or blank text…",
+      "Text with extra spaces…",
+    ]);
+    expect(list[0].node).toMatchObject({ t: "dup", columns: ["email"] });
+    expect(printExpression({ t: "group", id: "r", op: "and", items: [list[1].node] })).toBe("(org_id is not null and no org)");
+    expect(presets([{ name: "n", kind: "int" }], []).map((p) => p.label)).toEqual(["Duplicate values…"]);
   });
 });
 

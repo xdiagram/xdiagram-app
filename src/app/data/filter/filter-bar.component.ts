@@ -3,6 +3,7 @@ import { ChangeDetectionStrategy, Component, computed, input, output, signal } f
 import type { BrowseColumn, Engine, FilterIssue } from "../../core/tauri-api.service";
 import { comparableKinds, kindOf } from "../../filter/kinds";
 import { type ColsNode, type CondNode, type CountOp, type FilterNode, type GroupNode, newId, type Op, type RelNode, SEARCH_COLUMN, type SortKey } from "../../filter/model";
+import { type Preset, presets } from "../../filter/presets";
 import type { RelOption } from "../../filter/relations";
 import { ColsRowComponent } from "./cols-row.component";
 import { RelEditorComponent } from "./rel-editor.component";
@@ -69,6 +70,21 @@ interface Editing {
     @if (rels().length && relColumns()) {
       <button type="button" class="add" (click)="addRel($event)" title="Rows by their related rows: has orders, has no orders, has at least 3 orders over 100…">+ Related</button>
     }
+    @if (checks().length) {
+      <span class="saved-wrap">
+        <button type="button" class="add" [attr.aria-expanded]="checksOpen()" (click)="checksOpen.set(!checksOpen())" title="Ready-made data checks: duplicates, orphans, empty values…">
+          Checks ▾
+        </button>
+        @if (checksOpen()) {
+          <div class="scrim" (click)="checksOpen.set(false)"></div>
+          <div class="saved-menu checks" role="menu" aria-label="Data checks">
+            @for (p of checks(); track p.label) {
+              <button type="button" role="menuitem" class="use" [title]="p.detail" (click)="usePreset(p, $event)">{{ p.label }}</button>
+            }
+          </div>
+        }
+      </span>
+    }
     @if (tree().items.length) {
       <button type="button" class="clear" (click)="emit({ t: 'group', id: tree().id, op: 'and', items: [] })">Clear</button>
     }
@@ -130,6 +146,17 @@ interface Editing {
             (changed)="setDraft($event)" (toColumns)="setDraft(toCols(e.draft))" (submit)="apply()" />
         } @else if (e.draft.t === "cols") {
           <app-cols-row [columns]="columns()" [engine]="engine()" [node]="e.draft" (changed)="setDraft($event)" (toValue)="setDraft($event)" />
+          @if (issueOf(e.draft); as msg) {
+            <div class="issue">{{ msg }}</div>
+          }
+        } @else if (e.draft.t === "dup") {
+          <div class="group-head">Rows whose values repeat in other rows, in the columns:</div>
+          <div class="dup-cols">
+            @for (c of columns(); track c.name) {
+              <label><input type="checkbox" [checked]="e.draft.columns.includes(c.name)" (change)="toggleDup(c.name, $any($event.target).checked)" /> {{ c.name }}</label>
+            }
+          </div>
+          <div class="hint">Counted over the whole table. A NULL value is not a duplicate.</div>
           @if (issueOf(e.draft); as msg) {
             <div class="issue">{{ msg }}</div>
           }
@@ -223,6 +250,10 @@ interface Editing {
       border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-md); display: flex; flex-direction: column; gap: 8px; }
     .group-head { display: flex; align-items: center; gap: 5px; }
     .issue { color: var(--danger); font-size: 11.5px; }
+    .hint { color: var(--text-muted); font-size: 11.5px; }
+    .dup-cols { display: flex; flex-wrap: wrap; gap: 4px 12px; max-height: 160px; overflow: auto; }
+    .dup-cols label { display: flex; align-items: center; gap: 4px; font-family: var(--mono); font-size: 11.5px; cursor: pointer; }
+    .saved-menu.checks { min-width: 300px; }
     .group-head select { font: inherit; font-size: 12px; border: 1px solid var(--border); border-radius: 5px; padding: 2px 4px;
       background: var(--input-bg); color: var(--text); }
     .item { display: flex; align-items: flex-start; gap: 4px; padding-left: 10px; border-left: 2px solid var(--border); }
@@ -408,6 +439,29 @@ export class FilterBarComponent {
     this.open({ t: "group", id: newId(), op: "or", items: [this.newCondition(), this.newCondition()] }, true, event);
   }
 
+  protected readonly checksOpen = signal(false);
+  /** The data checks this table offers (see `presets.ts`). */
+  protected readonly checks = computed(() =>
+    this.columns().length ? presets(this.columns().map((c) => ({ name: c.name, kind: kindOf(c, this.engine()) })), this.rels()) : [],
+  );
+
+  protected usePreset(p: Preset, event: Event): void {
+    this.checksOpen.set(false);
+    if (p.edit) this.open(p.node, true, event);
+    else this.emit(addNode(this.tree(), p.node));
+  }
+
+  protected toggleDup(column: string, on: boolean): void {
+    this.editing.update((e) => {
+      if (!e || e.draft.t !== "dup") return e;
+      const set = new Set(e.draft.columns);
+      if (on) set.add(column);
+      else set.delete(column);
+      // In the table's column order.
+      return { ...e, draft: { ...e.draft, columns: this.columns().map((c) => c.name).filter((n) => set.has(n)) } };
+    });
+  }
+
   protected addRel(event: Event): void {
     const o = this.rels()[0];
     if (o) this.open({ t: "rel", id: newId(), label: o.label, schema: o.schema, table: o.table, on: o.on, quant: "some" }, true, event);
@@ -450,6 +504,7 @@ export class FilterBarComponent {
     this.editing.set(null);
     this.savedMenu.set(null);
     this.copyMenu.set(false);
+    this.checksOpen.set(false);
   }
 
   protected apply(): void {
@@ -467,6 +522,10 @@ export class FilterBarComponent {
     if (draft.t === "cond") draft = { ...draft, off: false, origin: undefined };
     else if (draft.t === "rel") draft = { ...draft, off: false, origin: undefined };
     else if (draft.t === "cols") draft = { ...draft, off: false };
+    else if (draft.t === "dup") {
+      if (!draft.columns.length) return;
+      draft = { ...draft, off: false };
+    }
     const tree = e.isNew ? addNode(this.tree(), draft) : replaceNode(this.tree(), e.draft.id, draft);
     if (hasActive(draft) || !e.isNew) this.emit(tree);
   }

@@ -41,7 +41,8 @@ export type WireNode =
   | { t: "cond"; id: string; column: string; op: Op; args: string[]; cs?: boolean }
   | { t: "search"; id: string; text: string; columns?: string[]; cs?: boolean }
   | { t: "rel"; id: string; schema: string; table: string; on: [string, string][]; quant: Quant; filter?: WireNode }
-  | { t: "cols"; id: string; left: string; op: CountOp; right: string };
+  | { t: "cols"; id: string; left: string; op: CountOp; right: string }
+  | { t: "dup"; id: string; columns: string[] };
 
 /**
  * The pseudo-column of a search in every text column (`any ~ text`): in the UI tree it is a
@@ -114,7 +115,15 @@ export interface ColsNode {
   off?: boolean;
 }
 
-export type FilterNode = GroupNode | CondNode | RelNode | ColsNode;
+/** Rows whose values in `columns` occur in more than one row of the table. */
+export interface DupNode {
+  t: "dup";
+  id: string;
+  columns: string[];
+  off?: boolean;
+}
+
+export type FilterNode = GroupNode | CondNode | RelNode | ColsNode | DupNode;
 
 export interface SortKey {
   column: string;

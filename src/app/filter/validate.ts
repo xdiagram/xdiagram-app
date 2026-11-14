@@ -68,7 +68,7 @@ export function treeIssues(node: FilterNode, kindOfColumn: (column: string) => C
   // The related table's values are checked by Rust, which knows its columns.
   if (node.t === "rel") return [];
   // Two columns: Rust checks that their kinds compare.
-  if (node.t === "cols") return [];
+  if (node.t === "cols" || node.t === "dup") return [];
   const kind = kindOfColumn(node.column);
   if (!kind) return [];
   if (node.op === "in" || node.op === "notIn") {

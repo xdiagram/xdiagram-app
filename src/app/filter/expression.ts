@@ -1,5 +1,5 @@
 import type { ColKind } from "../core/tauri-api.service";
-import { type Arg, type ColsNode, type CondNode, type CountOp, type FilterNode, type GroupNode, newId, type Op, type RelNode, SEARCH_COLUMN, type Span } from "./model";
+import { type Arg, type ColsNode, type CondNode, type CountOp, type DupNode, type FilterNode, type GroupNode, newId, type Op, type RelNode, SEARCH_COLUMN, type Span } from "./model";
 import { parsePoint, printPoint } from "./relative-dates";
 import type { RelOption } from "./relations";
 
@@ -16,6 +16,7 @@ import type { RelOption } from "./relations";
  *   any ~ v                       (search in every text column)
  *   has orders   no orders   count(orders) >= 3   has orders(total > 100)   (related rows)
  *   ends_on < `starts_on`         (another column: back quotes on the right)
+ *   dup(email, org_id)            (values that occur in more than one row)
  *   not …   ( … )   and   or
  *
  * Values: 'quoted' or "quoted" (\ escapes), or bare (numbers, dates, -7d for "7 days ago").
@@ -32,7 +33,7 @@ export class ParseError extends Error {
   }
 }
 
-const KEYWORDS = new Set(["and", "or", "not", "in", "between", "is", "null", "empty", "blank", "padded", "matches", "cs", "any", "has", "no", "count"]);
+const KEYWORDS = new Set(["and", "or", "not", "in", "between", "is", "null", "empty", "blank", "padded", "matches", "cs", "any", "has", "no", "count", "dup"]);
 const COUNT_OPS: CountOp[] = ["eq", "ne", "lt", "le", "gt", "ge"];
 const COUNT_SYMBOL: Record<CountOp, string> = { eq: "=", ne: "!=", lt: "<", le: "<=", gt: ">", ge: ">=" };
 const OPS: [string, Op | "span"][] = [
@@ -117,8 +118,8 @@ class Parser {
     return this.relation() ?? this.predicate();
   }
 
-  /** `has x`, `has no x`, `no x`, `count(x) >= n`; `x(…)` narrows the related rows. */
-  relation(): RelNode | null {
+  /** `has x`, `has no x`, `no x`, `count(x) >= n` (`x(…)` narrows the related rows); `dup(a, b)`. */
+  relation(): RelNode | DupNode | null {
     this.ws();
     const rest = this.src.slice(this.pos);
     const count = /^count\s*\(/i.exec(rest);
@@ -134,6 +135,15 @@ class Parser {
       if (!n) this.fail("Expected a whole number");
       this.pos += n[0].length;
       return { ...target, quant: { count: { op: op as CountOp, n: Number(n[0]) } } };
+    }
+    const dup = /^dup\s*\(/i.exec(rest);
+    if (dup) {
+      this.pos += dup[0].length;
+      const columns: string[] = [];
+      do columns.push(this.ident());
+      while (this.char(","));
+      this.expect(")", "“,” or “)”");
+      return { t: "dup", id: newId(), columns };
     }
     if (this.keyword("has")) return { ...this.relTargetAfter(this.keyword("no")), id: newId() };
     if (this.keyword("no")) return { ...this.relTargetAfter(true), id: newId() };
@@ -403,6 +413,7 @@ export function printExpression(node: FilterNode, top = true): string {
   if (node.t === "cond") return printCond(node);
   if (node.t === "rel") return printRel(node);
   if (node.t === "cols") return `${printIdent(node.left)} ${COUNT_SYMBOL[node.op]} \`${node.right.replace(/`/g, "``")}\``;
+  if (node.t === "dup") return `dup(${node.columns.map(printIdent).join(", ")})`;
   const parts = node.items.map((i) => printExpression(i, false)).filter((s) => s);
   if (!parts.length) return "";
   const joined = parts.join(` ${node.op} `);

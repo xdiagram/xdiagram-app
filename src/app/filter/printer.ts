@@ -27,6 +27,7 @@ export function nodeText(n: FilterNode): string {
     return [column, op, value].filter((s) => s).join(" ");
   }
   if (n.t === "cols") return `${n.left} ${COLS_SYMBOL[n.op]} ${n.right}`;
+  if (n.t === "dup") return `duplicates of ${n.columns.join(", ")}`;
   if (n.t === "rel") {
     const inner = n.filter && n.filter.items.some((i) => !i.off) ? ` where ${nodeText(n.filter)}` : "";
     return `${quantText(n.quant, n.label)}${inner}`;
