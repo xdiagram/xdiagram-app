@@ -452,9 +452,9 @@ export class TauriApi {
     return invoke("cancel_op", { opId });
   }
 
-  /** The join query as readable SQL for `engine` (no connection). */
-  joinSql(engine: Engine, request: unknown): Promise<string> {
-    return invoke("join_sql", { engine, request });
+  /** The join query as readable SQL with the values written in (reads the tables' columns; nothing else runs). */
+  joinSql(input: ConnectionInput, request: unknown, opId?: string): Promise<string> {
+    return this.db("join_sql", { input, request, opId });
   }
 
   /** Runs the join query read-only; columns are named `alias.column`. */

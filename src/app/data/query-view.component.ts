@@ -1,13 +1,23 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from "@angular/core";
 
 import { displayTable } from "../diagram/view-model";
-import { PAGE_SIZE } from "../state/browser.store";
+import { QUICK_HELP } from "../filter/help";
+import { highlightTerms, segments } from "../filter/highlight";
+import { printQuick } from "../filter/quick-syntax";
+import { singleColumn } from "../filter/tree";
+import { BrowserStore, PAGE_SIZE } from "../state/browser.store";
 import { QueryStore } from "../state/query.store";
 import { WorkspaceStore } from "../state/workspace.store";
+import { ExpressionBoxComponent } from "./filter/expression-box.component";
+import { FilterBarComponent } from "./filter/filter-bar.component";
 
-/** Query builder body of the data drawer: tables, columns, the generated SQL and the results. */
+/**
+ * Query builder body of the data drawer: tables, columns, the filter (the same tree, bar and
+ * expression box as the Rows view, over `alias.column`), the generated SQL and the results.
+ */
 @Component({
   selector: "app-query-view",
+  imports: [FilterBarComponent, ExpressionBoxComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="bar">
@@ -59,6 +69,11 @@ import { WorkspaceStore } from "../state/workspace.store";
     @if (!q.chosen().length) {
       <p class="hint">Add tables (here, from a table's right-click menu, or with Ctrl+K). They are joined along their relationships; the path is outlined on the diagram.</p>
     } @else {
+      <app-filter-bar [columns]="q.columns()" [engine]="engine()" [tree]="q.where()" [issues]="q.issues()" (treeChange)="q.setWhere($event)"
+        [textOpen]="textOpen()" (textToggle)="textOpen.set(!textOpen())" />
+      @if (textOpen()) {
+        <app-expression-box [columns]="q.columns()" [engine]="engine()" [tree]="q.where()" (treeChange)="q.setWhere($event)" />
+      }
       <pre class="sql" [title]="'Read-only. Values are sent as parameters when it runs.'">{{ q.sql() || "-- pick at least one column" }}</pre>
     }
 
@@ -77,18 +92,19 @@ import { WorkspaceStore } from "../state/workspace.store";
             <tr class="filters">
               @for (c of r.columns; track c.name) {
                 <th>
-                  <input type="text" [value]="filterText(c.name)" placeholder="=" spellcheck="false"
-                    (keydown.enter)="applyFilter(c.name, $any($event.target).value)"
-                    [attr.aria-label]="'Filter ' + c.name + ' (Enter; empty clears, NULL for null)'" />
+                  @let ft = filterText(c.name);
+                  <input type="text" [value]="ft ?? ''" [placeholder]="ft === null ? '(filtered)' : 'filter'" spellcheck="false" [title]="quickHelp"
+                    (keydown.enter)="q.setQuick(c.name, $any($event.target).value)"
+                    [attr.aria-label]="'Filter ' + c.name + ' (Enter applies; empty clears)'" />
                 </th>
               }
             </tr>
           </thead>
           <tbody>
-            @for (row of r.rows; track $index) {
+            @for (row of r.rows; track $index; let ri = $index) {
               <tr>
-                @for (cell of row; track $index) {
-                  <td [class.null]="cell === null" [title]="cell ?? 'NULL'" (click)="copy(cell)">{{ cell ?? "NULL" }}</td>
+                @for (cell of row; track $index; let ci = $index) {
+                  <td [class.null]="cell === null" [title]="cell ?? 'NULL'" (click)="copy(cell)">@if (marks()?.[ri]?.[ci]; as segs) {@for (s of segs; track $index) {<span [class.hit]="s.hit">{{ s.text }}</span>}} @else {<ng-container>{{ cell ?? "NULL" }}</ng-container>}</td>
                 }
               </tr>
             } @empty {
@@ -129,6 +145,7 @@ import { WorkspaceStore } from "../state/workspace.store";
     .picker label { display: flex; align-items: center; gap: 4px; font-family: var(--mono); font-size: 11.5px; cursor: pointer; }
     .p-title { font-weight: 600; color: var(--text-muted); }
     .hint { margin: 10px 12px; color: var(--text-muted); }
+    app-filter-bar, app-expression-box { flex: none; }
     .sql { margin: 0; padding: 6px 10px; font-family: var(--mono); font-size: 11.5px; background: var(--panel-2); border-bottom: 1px solid var(--border);
       max-height: 86px; overflow: auto; white-space: pre; flex: none; }
     .error { padding: 8px 12px; color: var(--danger); background: var(--danger-soft); }
@@ -144,6 +161,7 @@ import { WorkspaceStore } from "../state/workspace.store";
     .filters input { width: 100%; min-width: 60px; box-sizing: border-box; font: inherit; font-size: 11px; font-family: var(--mono);
       border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; background: var(--input-bg); color: var(--text); }
     td { cursor: copy; }
+    td .hit { background: var(--highlight); border-radius: 2px; }
     td.null { color: var(--text-muted); font-style: italic; }
     td.none { color: var(--text-muted); font-family: var(--font); cursor: default; padding: 10px; }
     tbody tr:hover td { background: var(--hover); }
@@ -157,6 +175,7 @@ import { WorkspaceStore } from "../state/workspace.store";
 export class QueryViewComponent {
   protected readonly q = inject(QueryStore);
   private readonly workspace = inject(WorkspaceStore);
+  private readonly browser = inject(BrowserStore);
   protected readonly picking = signal<string | null>(null);
   protected readonly short = displayTable;
 
@@ -165,7 +184,6 @@ export class QueryViewComponent {
     return this.workspace.view().tables.filter((t) => !inQuery.has(t.id));
   });
 
-  private readonly tableOfAlias = computed(() => new Map([...this.q.aliases()].map(([id, a]) => [a, id])));
 
   protected readonly range = computed(() => {
     const r = this.q.result();
@@ -188,24 +206,31 @@ export class QueryViewComponent {
     void this.q.run();
   }
 
-  private split(columnName: string): { table: string; column: string } | null {
-    const dot = columnName.indexOf(".");
-    const table = this.tableOfAlias().get(columnName.slice(0, dot));
-    return table ? { table, column: columnName.slice(dot + 1) } : null;
+  protected readonly engine = this.browser.engine;
+  protected readonly textOpen = signal(false);
+  protected readonly quickHelp = QUICK_HELP;
+
+  /** A column box's text: its one condition in quick syntax; `null` when it has several. */
+  protected filterText(column: string): string | null {
+    const nodes = this.q.where().items.filter((n) => singleColumn(n) === column && !n.off);
+    if (!nodes.length) return "";
+    return nodes.length === 1 ? printQuick(nodes[0]) : null;
   }
 
-  protected filterText(columnName: string): string {
-    const s = this.split(columnName);
-    const f = s && this.q.filters().find((x) => x.table === s.table && x.column === s.column);
-    return f ? (f.value ?? "NULL") : "";
-  }
-
-  protected applyFilter(columnName: string, text: string): void {
-    const s = this.split(columnName);
-    if (!s) return;
-    const t = text.trim();
-    this.q.setFilter(s.table, s.column, t === "" ? undefined : t.toUpperCase() === "NULL" ? null : t);
-  }
+  /** Matched text per cell, as in the Rows view. */
+  protected readonly marks = computed(() => {
+    const r = this.q.result();
+    const { all, byColumn } = highlightTerms(this.q.where());
+    if (!r || (!all.length && !byColumn.size)) return null;
+    const terms = r.columns.map((c) => [...all, ...(byColumn.get(c.name) ?? [])]);
+    return r.rows.map((row) =>
+      row.map((cell, ci) => {
+        if (cell === null || !terms[ci].length) return null;
+        const segs = segments(cell, terms[ci]);
+        return segs.some((s) => s.hit) ? segs : null;
+      }),
+    );
+  });
 
   protected copy(value: string | null): void {
     if (value !== null) void navigator.clipboard?.writeText(value).then(() => this.workspace.flash("Value copied"));

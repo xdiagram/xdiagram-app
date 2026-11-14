@@ -98,10 +98,46 @@ pub struct Issue {
     pub message: String,
 }
 
-/// The table a condition's columns belong to, and its alias in the statement.
+/// The table a condition's columns belong to, and its alias in the statement; in a join, also
+/// the other tables, whose columns are named `alias.column`.
 pub struct Scope<'a> {
     pub meta: &'a TableMeta,
     pub alias: String,
+    pub joined: Vec<(String, &'a TableMeta)>,
+}
+
+impl<'a> Scope<'a> {
+    pub fn new(meta: &'a TableMeta, alias: &str) -> Self {
+        Scope { meta, alias: alias.into(), joined: Vec::new() }
+    }
+
+    /// A column and its SQL expression: a column of the main table by its name, else
+    /// `alias.column` of any table in the statement.
+    fn resolve(&self, d: Dialect, name: &str) -> Option<(&'a BrowseColumn, String)> {
+        let main: &'a TableMeta = self.meta;
+        let qualify = |alias: &str, c: &BrowseColumn| format!("{}.{}", d.quote(alias), d.quote(&c.name));
+        if let Some(c) = main.column(name) {
+            return Some((c, qualify(&self.alias, c)));
+        }
+        let (alias, column) = name.split_once('.')?;
+        if alias == self.alias {
+            return main.column(column).map(|c| (c, qualify(alias, c)));
+        }
+        let (a, m) = self.joined.iter().find(|(a, _)| a == alias)?;
+        let m: &'a TableMeta = m;
+        m.column(column).map(|c| (c, qualify(a, c)))
+    }
+
+    /// Every column of every table, with its expression.
+    fn all(&self, d: Dialect) -> Vec<(&'a BrowseColumn, String)> {
+        let main: &'a TableMeta = self.meta;
+        let mut out: Vec<(&'a BrowseColumn, String)> = main.columns.iter().map(|c| (c, format!("{}.{}", d.quote(&self.alias), d.quote(&c.name)))).collect();
+        for (a, m) in &self.joined {
+            let m: &'a TableMeta = m;
+            out.extend(m.columns.iter().map(|c| (c, format!("{}.{}", d.quote(a), d.quote(&c.name)))));
+        }
+        out
+    }
 }
 
 /// Renders one statement's conditions; parameters are numbered across the whole statement.
@@ -169,24 +205,24 @@ impl Render {
             return self.issue(id, format!("Values are limited to {MAX_VALUE_CHARS} characters"));
         }
         let d = self.d;
-        let mut cols: Vec<&BrowseColumn> = Vec::new();
         if columns.len() > MAX_SEARCH_COLUMNS {
             return self.issue(id, format!("A search can name {MAX_SEARCH_COLUMNS} columns at most"));
         }
-        // All columns: no cap of its own (a very wide table meets the parameter limit, which is reported).
+        // All columns (of every joined table): no cap of its own (a very wide table meets the
+        // parameter limit, which is reported).
+        let mut cols: Vec<(&BrowseColumn, String)> = Vec::new();
         if columns.is_empty() {
-            cols.extend(s.meta.columns.iter());
+            cols = s.all(d);
         } else {
             for name in columns {
-                match s.meta.column(name) {
+                match s.resolve(d, name) {
                     Some(c) => cols.push(c),
                     None => return self.issue(id, format!("Unknown column “{name}”")),
                 }
             }
         }
         let mut parts = Vec::new();
-        for col in cols {
-            let expr = format!("{}.{}", d.quote(&s.alias), d.quote(&col.name));
+        for (col, expr) in cols {
             match col.kind {
                 ColKind::Text | ColKind::Enum | ColKind::Json | ColKind::Other => {
                     let t = d.text_expr(&expr, col.kind, &col.type_name);
@@ -212,8 +248,7 @@ impl Render {
 
     fn cond(&mut self, s: &Scope, id: &str, column: &str, op: Op, args: &[String], cs: bool) -> Option<String> {
         let d = self.d;
-        let Some(col) = s.meta.column(column) else { return self.issue(id, format!("Unknown column “{column}”")) };
-        let expr = format!("{}.{}", d.quote(&s.alias), d.quote(&col.name));
+        let Some((col, expr)) = s.resolve(d, column) else { return self.issue(id, format!("Unknown column “{column}”")) };
         let arity = match op {
             Op::IsNull | Op::NotNull | Op::IsEmpty | Op::IsBlank | Op::IsPadded => Some(0),
             Op::Between | Op::Range => Some(2),
@@ -445,7 +480,7 @@ mod tests {
 
     fn render(d: Dialect, m: &TableMeta, f: &FilterNode) -> Result<(String, Vec<String>), Vec<Issue>> {
         let mut r = Render::new(d);
-        let scope = Scope { meta: m, alias: "t0".into() };
+        let scope = Scope::new(m, "t0");
         match where_clause(&mut r, &scope, Some(f)) {
             Ok(sql) => Ok((sql.unwrap_or_default(), r.params)),
             Err(AppError::Filter(issues)) => Err(issues),
@@ -599,7 +634,7 @@ mod tests {
         let m = crate::db::catalog::sqlite_meta(&conn, "t").unwrap().unwrap();
         let ids = |f: FilterNode| -> Vec<i64> {
             let mut r = Render::new(Dialect::Sqlite);
-            let scope = Scope { meta: &m, alias: "t0".into() };
+            let scope = Scope::new(&m, "t0");
             let sql = where_clause(&mut r, &scope, Some(&f)).unwrap().unwrap();
             let mut stmt = conn.prepare(&format!("SELECT id FROM t AS \"t0\" WHERE {sql} ORDER BY id")).unwrap();
             stmt.query_map(rusqlite::params_from_iter(r.params.iter()), |row| row.get(0)).unwrap().map(Result::unwrap).collect()

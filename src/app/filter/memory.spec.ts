@@ -1,6 +1,6 @@
 import { MAX_TABLES, deleteNamed, emptyMemory, parseMemory, rememberExpression, rememberTable, saveNamed } from "./memory";
 import type { GroupNode } from "./model";
-import { reId } from "./tree";
+import { reId, renameColumns } from "./tree";
 
 const where = (column: string): GroupNode => ({ t: "group", id: "r", op: "and", items: [{ t: "cond", id: "c", column, op: "eq", args: ["1"] }] });
 
@@ -46,6 +46,22 @@ describe("remembered filters", () => {
     expect(m.tables["t"].saved?.map((s) => s.name)).toEqual(["ADMINS"]);
     m = deleteNamed(rememberTable(m, "t", { where: undefined }), "t", "ADMINS");
     expect(m.tables["t"]).toBeUndefined();
+  });
+
+  it("renames or drops the columns of a tree (query aliases)", () => {
+    const tree: GroupNode = {
+      t: "group",
+      id: "r",
+      op: "and",
+      items: [
+        { t: "cond", id: "a", column: "u.role", op: "eq", args: ["admin"] },
+        { t: "group", id: "g", op: "or", items: [{ t: "cond", id: "b", column: "m.org_id", op: "eq", args: ["1"] }] },
+        { t: "cond", id: "s", column: "*", op: "contains", args: ["x"] },
+      ],
+    };
+    const out = renameColumns(tree, (c) => (c.startsWith("m.") ? null : c.replace(/^u\./, "u2.")));
+    expect(out.items.map((i) => (i.t === "cond" ? i.column : "group"))).toEqual(["u2.role", "*"]);
+    expect(renameColumns(tree, (c) => c)).toEqual(tree);
   });
 
   it("gives an applied filter new ids", () => {

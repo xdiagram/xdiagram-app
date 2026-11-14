@@ -6,11 +6,11 @@ use super::browse::{
     finish_count, finish_page, pg_fetch_text, pg_row_estimate, pg_table_columns, plan_count, plan_page, plan_sql_text, BrowseColumn, BrowseRequest, BrowseResult, CountRequest,
     CountResult,
 };
-use super::catalog::TableInfo;
-use super::run::run;
+use super::catalog::{Catalog, TableInfo, TableMeta};
+use super::run::{run, Ran, Stmt};
 use super::values::{finish_values, plan_values, ValuesRequest, ValuesResult};
 use super::profile::{profile_columns, sample_sql, ProfileRequest, TableProfile, DEFAULT_SAMPLE, MAX_SAMPLE};
-use super::query::{self, JoinRequest, Mode, Resolved};
+use super::query::{self, JoinRequest, Mode};
 use super::sql::Dialect;
 use super::browse::{cap_rows_at, MAX_LIMIT};
 use super::related::{self, LookupResult, RelatedRequest, RelatedResult, Step, MAX_LOOKUPS};
@@ -297,111 +297,77 @@ pub async fn profile_table(input: &ConnectionInput, req: ProfileRequest) -> Resu
     })
 }
 
-/// The join query as readable SQL (no connection needed): for the preview and Copy.
-pub fn join_sql(engine: Engine, req: &JoinRequest) -> Result<String, AppError> {
-    let d = Dialect::from(engine);
-    let tables = req
-        .tables
+/// The tables of a join query, by alias, from the catalog the runner loaded.
+fn join_tables(cat: &Catalog, req: &JoinRequest) -> Result<HashMap<String, TableMeta>, AppError> {
+    req.tables
         .iter()
         .map(|t| {
-            let qualified = if t.schema.is_empty() || t.schema == "public" { d.quote(&t.table) } else { d.qualified(&t.schema, &t.table) };
-            (t.alias.clone(), Resolved { qualified, columns: Vec::new() })
+            let meta = cat.get(&(t.schema.clone(), t.table.clone())).ok_or_else(|| not_found(&t.schema, &t.table))?;
+            Ok((t.alias.clone(), meta.clone()))
         })
-        .collect();
-    Ok(query::build(d, req, &tables, Mode::Readable)?.0)
+        .collect()
+}
+
+/// Each table a join query names, once.
+fn join_table_names(req: &JoinRequest) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for t in &req.tables {
+        let key = (t.schema.clone(), t.table.clone());
+        if !out.contains(&key) {
+            out.push(key);
+        }
+    }
+    out
+}
+
+/// The join query as readable SQL, values written in: the preview and Copy. Reads the tables'
+/// columns (so conditions compare as they will when run); nothing else runs.
+pub async fn join_sql(input: &ConnectionInput, req: JoinRequest) -> Result<String, AppError> {
+    run(input, join_table_names(&req), |_, _| Ok(Vec::new()), move |d, cat, _| Ok(query::build(d, &req, &join_tables(cat, &req)?, Mode::Readable)?.0)).await
 }
 
 /// Runs the join query read-only and returns a page of its rows (columns named `alias.column`).
 pub async fn browse_join(input: &ConnectionInput, req: JoinRequest) -> Result<BrowseResult, AppError> {
     let started = Instant::now();
-    let d = Dialect::from(input.engine);
-    let mut tables: HashMap<String, Resolved> = HashMap::new();
-    let rows = match input.engine {
-        Engine::Postgres => {
-            let mut client = connect(input).await?;
-            for t in &req.tables {
-                let columns = pg_table_columns(&client, &t.schema, &t.table).await?;
-                if columns.is_empty() {
-                    return Err(not_found(&t.schema, &t.table));
-                }
-                tables.insert(t.alias.clone(), Resolved { qualified: d.qualified(&t.schema, &t.table), columns });
-            }
-            let (sql, params) = query::build(d, &req, &tables, Mode::Execute)?;
-            pg_fetch_text(&mut client, &sql, &params, limit(req.timeout_secs, 15)).await?
-        }
-        Engine::Mysql => {
-            let mut conn = mysql::connect(input).await?;
-            let result = async {
-                for t in &req.tables {
-                    let db = mysql::resolve_db(&mut conn, &t.schema).await?;
-                    let columns = mysql::table_columns(&mut conn, &db, &t.table).await?;
-                    if columns.is_empty() {
-                        return Err(not_found(&db, &t.table));
-                    }
-                    tables.insert(t.alias.clone(), Resolved { qualified: d.qualified(&db, &t.table), columns });
-                }
-                let (sql, params) = query::build(d, &req, &tables, Mode::Execute)?;
-                mysql::fetch_text(&mut conn, &sql, &params, limit(req.timeout_secs, 15) * 1000).await
-            }
-            .await;
-            let _ = conn.disconnect().await;
-            result?
-        }
-        Engine::Mssql => {
-            let mut client = mssql::connect(input).await?;
-            for t in &req.tables {
-                let schema = mssql::resolve_schema(&t.schema);
-                let columns = mssql::table_columns(&mut client, &schema, &t.table).await?;
-                if columns.is_empty() {
-                    return Err(not_found(&schema, &t.table));
-                }
-                tables.insert(t.alias.clone(), Resolved { qualified: d.qualified(&schema, &t.table), columns });
-            }
-            let (sql, params) = query::build(d, &req, &tables, Mode::Execute)?;
-            mssql::fetch_text(&mut client, &sql, &params, limit(req.timeout_secs, 15) as u64).await?
-        }
-        Engine::Sqlite => {
-            let input = input.clone();
-            let req2 = req.clone();
-            let (rows, resolved) = blocking(move || {
-                let conn = sqlite::open(&input)?;
-                let mut tables: HashMap<String, Resolved> = HashMap::new();
-                for t in &req2.tables {
-                    let columns = sqlite::table_columns(&conn, &t.table)?;
-                    if columns.is_empty() {
-                        return Err(not_found("", &t.table));
-                    }
-                    tables.insert(t.alias.clone(), Resolved { qualified: d.quote(&t.table), columns });
-                }
-                let (sql, params) = query::build(d, &req2, &tables, Mode::Execute)?;
-                Ok((sqlite::fetch_text(&conn, &sql, &params)?, tables))
+    let plan_req = req.clone();
+    run(
+        input,
+        join_table_names(&req),
+        move |d, cat| {
+            let (sql, params) = query::build(d, &plan_req, &join_tables(cat, &plan_req)?, Mode::Execute)?;
+            Ok(vec![Stmt { sql, params, timeout_s: limit(plan_req.timeout_secs, 15), optional: false }])
+        },
+        move |_, cat, ran| {
+            let tables = join_tables(cat, &req)?;
+            let rows = match ran.into_iter().next() {
+                Some(Ran::Rows(rows)) => rows,
+                Some(Ran::Failed(e)) => return Err(e),
+                _ => return Err(AppError::Invalid("The rows could not be read".into())),
+            };
+            let columns: Vec<BrowseColumn> = req
+                .columns
+                .iter()
+                .map(|c| {
+                    let source = tables.get(&c.alias).and_then(|t| t.column(&c.column));
+                    BrowseColumn { name: format!("{}.{}", c.alias, c.column), ..source.cloned().unwrap_or_default() }
+                })
+                .collect();
+            let (rows, has_more, truncated_at) = cap_rows_at(rows, req.limit.clamp(1, MAX_LIMIT) as usize);
+            Ok(BrowseResult {
+                columns,
+                rows,
+                has_more,
+                row_estimate: 0.0,
+                ordered_by: Vec::new(),
+                sort: Vec::new(),
+                stable_order: false,
+                truncated_cells: truncated_at.len() as u32,
+                truncated_at,
+                elapsed_ms: started.elapsed().as_millis() as u64,
             })
-            .await?;
-            tables = resolved;
-            rows
-        }
-    };
-    let columns: Vec<BrowseColumn> = req
-        .columns
-        .iter()
-        .map(|c| {
-            let source = tables.get(&c.alias).and_then(|t| t.columns.iter().find(|x| x.name == c.column));
-            BrowseColumn { name: format!("{}.{}", c.alias, c.column), ..source.cloned().unwrap_or_default() }
-        })
-        .collect();
-    let (rows, has_more, truncated_at) = cap_rows_at(rows, req.limit.clamp(1, MAX_LIMIT) as usize);
-    Ok(BrowseResult {
-        columns,
-        rows,
-        has_more,
-        row_estimate: 0.0,
-        ordered_by: Vec::new(),
-        sort: Vec::new(),
-        stable_order: false,
-        truncated_cells: truncated_at.len() as u32,
-        truncated_at,
-        elapsed_ms: started.elapsed().as_millis() as u64,
-    })
+        },
+    )
+    .await
 }
 
 /// "Related data": a batch of key lookups on one connection, read-only. A lookup that fails

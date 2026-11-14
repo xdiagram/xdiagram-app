@@ -66,7 +66,7 @@ function readHeight(): number {
         <button type="button" role="tab" [class.on]="store.mode() === 'profile'" [attr.aria-selected]="store.mode() === 'profile'"
           (click)="store.setMode('profile')" title="Column statistics from a sample of the table" [disabled]="!store.current()">Profile</button>
         <button type="button" role="tab" [class.on]="store.mode() === 'query'" [attr.aria-selected]="store.mode() === 'query'"
-          (click)="openQuery()" title="Join tables along their relationships">Query</button>
+          (click)="openQuery()" title="Join tables along their relationships (an empty query starts from this table and its filter)">Query</button>
       </div>
       @if (store.mode() === "profile" && hasPii()) {
         <label class="reveal" title="Values of columns that look like personal data are masked">
@@ -370,11 +370,13 @@ export class DataDrawerComponent {
   protected readonly reveal = signal(false);
   private readonly query = inject(QueryStore);
 
-  /** Query tab: starts from the table being browsed, if the query is empty. */
+  /** Query tab: starts from the table being browsed and its filter, if the query is empty. */
   protected openQuery(): void {
-    const id = this.store.current()?.tableId;
-    if (id && !this.query.chosen().length) this.query.add(id);
-    else this.store.setMode("query");
+    const cur = this.store.current();
+    if (cur && !this.query.chosen().length) {
+      if (hasActive(cur.where)) this.query.openWith(cur.tableId, cur.where);
+      else this.query.add(cur.tableId);
+    } else this.store.setMode("query");
   }
   protected readonly profile = computed(() => {
     const id = this.store.current()?.tableId;

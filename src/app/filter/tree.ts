@@ -1,5 +1,5 @@
 import type { BrowseFilter } from "../core/tauri-api.service";
-import { type CondNode, type FilterNode, type GroupNode, newId } from "./model";
+import { type CondNode, type FilterNode, type GroupNode, newId, SEARCH_COLUMN } from "./model";
 
 /** All edits return a new tree (signals compare by reference). */
 
@@ -73,6 +73,19 @@ export function singleColumn(n: FilterNode): string | null {
   if (n.t === "cond") return n.column;
   const cols = new Set(n.items.map(singleColumn));
   return cols.size === 1 && !cols.has(null) ? [...cols][0] : null;
+}
+
+/**
+ * The tree with each condition's column renamed by `fn` (searches across all columns are
+ * kept); `null` removes the condition, and groups it leaves empty (not the root).
+ */
+export function renameColumns(root: GroupNode, fn: (column: string) => string | null): GroupNode {
+  const renamed = mapTree(root, (n) => {
+    if (n.t !== "cond" || n.column === SEARCH_COLUMN) return n;
+    const column = fn(n.column);
+    return column === null ? null : column === n.column ? n : { ...n, column };
+  }) as GroupNode;
+  return mapTree(renamed, (n) => (n.t === "group" && n.id !== root.id && n.items.length === 0 ? null : n)) as GroupNode;
 }
 
 /** The same tree with new ids (a saved filter applied again is a new set of chips). */

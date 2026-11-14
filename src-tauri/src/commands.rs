@@ -37,10 +37,11 @@ pub fn cancel_op(op_id: String) -> bool {
     ops::cancel(&op_id)
 }
 
-/// The join query as readable SQL, for the preview (no connection).
+/// The join query as readable SQL with the values written in, for the preview and Copy (reads
+/// the tables' columns; nothing else runs).
 #[tauri::command]
-pub fn join_sql(engine: db::Engine, request: db::query::JoinRequest) -> Result<String, AppError> {
-    dispatch::join_sql(engine, &request)
+pub async fn join_sql(input: ConnectionInput, request: db::query::JoinRequest, op_id: Option<String>) -> Result<String, AppError> {
+    ops::cancellable(op_id, dispatch::join_sql(&input, request)).await
 }
 
 /// Runs the join query (read-only) and returns a page of rows.
