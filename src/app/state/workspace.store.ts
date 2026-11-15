@@ -100,6 +100,10 @@ export interface DiagramHandle {
   currentViewport(): Viewport | null;
   /** Zooms to fit these tables. */
   fitTo(ids: readonly string[]): void;
+  /** Escape on the canvas (see DiagramComponent.escape); false when it had nothing to do. */
+  escape(): boolean;
+  /** The selected tables, in the order they were selected. */
+  selectedTables(): string[];
 }
 
 /** Implemented by the DBML editor; lets the canvas and shortcuts use its undo history. */

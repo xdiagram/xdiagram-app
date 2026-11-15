@@ -36,6 +36,7 @@ import { WorkloadPanelComponent } from "./sidebar/workload-panel.component";
 import { BrowserStore } from "./state/browser.store";
 import { WorkloadStore } from "./state/workload.store";
 import { ModulesStore } from "./state/modules.store";
+import { JoinPathStore } from "./state/join-path.store";
 import { WorkspaceStore } from "./state/workspace.store";
 
 const EDITOR_WIDTH_KEY = "xdiagram.editorWidth";
@@ -95,6 +96,7 @@ export class AppComponent {
   protected readonly store = inject(WorkspaceStore);
   protected readonly workload = inject(WorkloadStore);
   protected readonly modules = inject(ModulesStore);
+  private readonly joinPaths = inject(JoinPathStore);
   private readonly docs = inject(DocsService);
   protected readonly ddl = inject(DdlService);
   protected readonly lint = inject(LintStore);
@@ -387,7 +389,11 @@ export class AppComponent {
         this.exportOpen.set(false);
         this.viewsOpen.set(false);
         // Otherwise Escape clears the canvas selection (dialogs handle their own Escape).
-        if (!menuOpen && !this.overlayOpen() && !isTextTarget(e.target)) this.store.diagram?.clearSelection();
+        if (!menuOpen && !this.overlayOpen() && !isTextTarget(e.target)) this.store.diagram?.escape();
+      } else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && this.joinPaths.active() && !e.altKey && !isTextTarget(e.target) && !this.overlayOpen()) {
+        // Join path mode: the previous / next path.
+        e.preventDefault();
+        this.joinPaths.step(e.key === "ArrowLeft" ? -1 : 1);
       } else if (e.key.toLowerCase() === "f" && !e.altKey && !isTextTarget(e.target) && !this.paletteOpen()) {
         this.store.focusMode.update((v) => !v);
       }

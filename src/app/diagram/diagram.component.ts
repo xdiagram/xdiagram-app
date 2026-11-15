@@ -23,6 +23,8 @@ import { ThemeService } from "../core/theme.service";
 import { profileSummary } from "../data/profile-format";
 import { WorkloadStore } from "../state/workload.store";
 import { ModulesStore } from "../state/modules.store";
+import { JoinPathStore } from "../state/join-path.store";
+import { PathBarComponent } from "../paths/path-bar.component";
 import { DiagramHandle, WorkspaceStore } from "../state/workspace.store";
 import { CanvasMenuAction, CanvasMenuComponent, CanvasMenuState } from "./context-menu.component";
 import { MinimapComponent } from "./minimap.component";
@@ -107,7 +109,7 @@ const RATE_SLOT_W = 118;
 @Component({
   selector: "app-diagram",
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [CanvasMenuComponent, MinimapComponent],
+  imports: [CanvasMenuComponent, MinimapComponent, PathBarComponent],
   template: `
     <div #host class="host"></div>
     @if (inlineEdit(); as ie) {
@@ -151,6 +153,9 @@ const RATE_SLOT_W = 118;
         <span><i class="l-idle"></i>idle table</span>
         <span><i class="l-flag">⚑</i>seq-scan heavy</span>
       </div>
+    }
+    @if (joinPaths.active()) {
+      <app-path-bar />
     }
     @if (showMinimap() && store.view().tables.length >= 8) {
       <app-minimap class="minimap" [scene]="sceneSig()" [version]="sceneVersion()" [view]="viewRect()"
@@ -326,6 +331,7 @@ export class DiagramComponent implements DiagramHandle {
   protected readonly store = inject(WorkspaceStore);
   protected readonly workload = inject(WorkloadStore);
   private readonly modules = inject(ModulesStore);
+  protected readonly joinPaths = inject(JoinPathStore);
   private readonly lint = inject(LintStore);
   private readonly query = inject(QueryStore);
   private readonly theme = inject(ThemeService);
@@ -445,6 +451,22 @@ export class DiagramComponent implements DiagramHandle {
     effect(() => {
       this.query.highlight();
       if (this.stage) untracked(() => this.applyHighlight());
+    });
+
+    // Join path mode: the path lit, everything else dimmed.
+    effect(() => {
+      this.joinPaths.highlight();
+      if (this.stage) untracked(() => this.applyHighlight());
+    });
+    // A new path (or another one of them) is brought into view.
+    effect(() => {
+      if (!this.joinPaths.fitRequests()) return;
+      untracked(() => {
+        const path = this.joinPaths.highlight();
+        // Below the path bar (rendered by then), so the bar never covers the path.
+        const bar = () => (this.el.nativeElement as HTMLElement).querySelector("app-path-bar")?.getBoundingClientRect().height ?? 0;
+        if (path) setTimeout(() => this.fitTo([...path.tables], bar() + 12), 0);
+      });
     });
 
     // Lint markers: a severity badge on each table with findings.
@@ -1175,6 +1197,10 @@ export class DiagramComponent implements DiagramHandle {
       case "query":
         for (const id of ids) this.query.add(id);
         break;
+      case "joinPath":
+        // Click then Shift+click: the first table clicked is the start.
+        if (ids.length === 2) this.joinPaths.show(ids[0], ids[1]);
+        break;
       case "hide":
         if (ids.length > 1) {
           this.store.setHidden(ids, true);
@@ -1371,6 +1397,8 @@ export class DiagramComponent implements DiagramHandle {
     const p = this.palette;
     const selection = this.selection;
     const query = this.exporting ? null : this.query.highlight();
+    // Join path mode wins over the selection and the query builder's outline (hover still shows).
+    const path = this.exporting ? null : this.joinPaths.highlight();
     for (const e of scene.edges) {
       const view = this.edgeViews.get(e.ref.id);
       if (!view) continue;
@@ -1384,6 +1412,8 @@ export class DiagramComponent implements DiagramHandle {
         active = e.ref.id === this.hoverEdge;
       } else if (this.hoverTable) {
         active = e.ref.from.table === this.hoverTable || e.ref.to.table === this.hoverTable;
+      } else if (path) {
+        active = path.refs.has(e.ref.id);
       } else if (selection.size && !query) {
         active = selection.has(e.ref.from.table) || selection.has(e.ref.to.table);
       } else if (query) {
@@ -1399,7 +1429,7 @@ export class DiagramComponent implements DiagramHandle {
       if (active) view.node.moveToTop();
     }
     for (const [id, view] of this.tableViews) {
-      const isSel = selection.has(id) || !!query?.tables.has(id);
+      const isSel = path ? path.tables.has(id) : selection.has(id) || !!query?.tables.has(id);
       view.body.stroke(isSel ? p.tableBorderSelected : p.tableBorder);
       view.body.strokeWidth(isSel ? 2 : 1);
     }
@@ -1409,12 +1439,19 @@ export class DiagramComponent implements DiagramHandle {
 
   /**
    * Idle tables (X-ray) are dimmed; in focus mode, tables more than one relationship away from
-   * the selected tables fade out, and so do the edges that touch no selected table.
+   * the selected tables fade out, and so do the edges that touch no selected table. In join path
+   * mode everything off the path fades instead.
    */
   private applyTableOpacity(): void {
     const scene = this.scene;
     if (!scene) return;
     const p = this.palette;
+    const path = this.exporting ? null : this.joinPaths.highlight();
+    if (path) {
+      for (const [id, view] of this.tableViews) view.node.opacity(path.tables.has(id) ? 1 : PATH_DIM_TABLE);
+      for (const e of scene.edges) this.edgeViews.get(e.ref.id)?.node.opacity(path.refs.has(e.ref.id) ? 1 : PATH_DIM_EDGE);
+      return;
+    }
     const focus = this.store.focusMode() && !this.exporting && this.selection.size ? this.selection : null;
     const near = focus ? relatedTables(scene.edges.map((e) => e.ref), focus) : new Set<string>();
     const facts = this.workload.enabled() && !this.exporting ? this.workload.facts() : null;
@@ -1772,16 +1809,36 @@ export class DiagramComponent implements DiagramHandle {
     return true;
   }
 
-  fitTo(ids: readonly string[]): void {
+  /** Zooms to fit these tables; `top` keeps that many pixels free above them (for an overlay). */
+  fitTo(ids: readonly string[], top = 0): void {
     const stage = this.stage;
     const boxes = ids.map((id) => this.scene?.tables.get(id)).filter((b): b is TableBox => !!b);
     if (!stage || boxes.length === 0) return;
     const b = boundsOf(boxes);
     const pad = 64;
-    const scale = Math.min(1, Math.max(MIN_SCALE, Math.min((stage.width() - pad * 2) / b.w, (stage.height() - pad * 2) / b.h)));
+    const h = Math.max(1, stage.height() - top);
+    const scale = Math.min(1, Math.max(MIN_SCALE, Math.min((stage.width() - pad * 2) / b.w, (h - pad * 2) / b.h)));
     stage.scale({ x: scale, y: scale });
-    stage.position({ x: (stage.width() - b.w * scale) / 2 - b.x * scale, y: (stage.height() - b.h * scale) / 2 - b.y * scale });
+    stage.position({ x: (stage.width() - b.w * scale) / 2 - b.x * scale, y: top + (h - b.h * scale) / 2 - b.y * scale });
     this.onViewportChanged();
+  }
+
+  /**
+   * Escape on the canvas: nothing while a menu, rename, form, link or band handles its own;
+   * otherwise it leaves join path mode, else clears the selection.
+   */
+  escape(): boolean {
+    if (this.menu() || this.inlineEdit() || this.columnForm() || this.linking || this.band) return false;
+    if (this.joinPaths.active()) {
+      this.joinPaths.exit();
+      return true;
+    }
+    return this.clearSelection();
+  }
+
+  /** The selected tables in the order they were selected. */
+  selectedTables(): string[] {
+    return [...this.selection].filter((id) => this.scene?.tables.has(id));
   }
 
   currentViewport(): Viewport | null {
@@ -1926,6 +1983,9 @@ interface EdgeView {
 const DETAIL_SCALE = 0.45;
 /** Below this zoom, table names are not drawn either (boxes only). */
 const TITLE_SCALE = 0.22;
+/** Opacity of the tables and relationships off the shown join path. */
+const PATH_DIM_TABLE = 0.2;
+const PATH_DIM_EDGE = 0.12;
 /** On-screen size (px) of the table names drawn at mid zoom. */
 const MID_LABEL_PX = 12;
 /** On-screen size (px) of zone names, up to a size that still fits above the tables (diagram units). */

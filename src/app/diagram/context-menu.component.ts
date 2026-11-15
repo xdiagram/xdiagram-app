@@ -26,6 +26,7 @@ export type CanvasMenuAction =
   | { kind: "browse" }
   | { kind: "profile" }
   | { kind: "query" }
+  | { kind: "joinPath" }
   | { kind: "hide" }
   | { kind: "showOnly" }
   | { kind: "isolate" }
@@ -51,6 +52,9 @@ export type CanvasMenuAction =
       <button type="button" role="menuitem" (click)="pick({ kind: 'hide' })">Hide {{ state().count }} tables</button>
       <button type="button" role="menuitem" (click)="pick({ kind: 'showOnly' })">Show only these</button>
       <button type="button" role="menuitem" (click)="pick({ kind: 'isolate' })">Show only these &amp; related</button>
+      @if (state().count === 2) {
+        <button type="button" role="menuitem" (click)="pick({ kind: 'joinPath' })" title="The best ways to join the two tables, from the first one selected">Show join path</button>
+      }
       @if (state().canBrowse) {
         <button type="button" role="menuitem" (click)="pick({ kind: 'query' })">Add to query</button>
       }
