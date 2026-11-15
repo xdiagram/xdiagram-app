@@ -45,7 +45,8 @@
 .menu button { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%;
   font: inherit; font-size: 12.5px; text-align: left; border: 0; background: transparent; color: var(--text);
   padding: 7px 10px; border-radius: 5px; cursor: pointer; }
-.menu button:hover { background: var(--hover); }
+.menu button:hover:not(:disabled) { background: var(--hover); }
+.menu button:disabled { opacity: 0.5; cursor: default; }
 kbd { font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); }
 .menu-sep { height: 1px; background: var(--border); margin: 4px 2px; }
 .menu-label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); padding: 5px 10px 3px; }

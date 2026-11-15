@@ -151,6 +151,9 @@ export class AppComponent {
     cmd("detail-names", "Show only table names", () => this.store.setDetail("names"), "Detail", has);
     cmd("focus", this.store.focusMode() ? "Turn off focus mode" : "Turn on focus mode", () => this.store.focusMode.update((v) => !v), "F", has);
     cmd("show-all", "Show all tables", () => this.store.applyView(null), undefined, has);
+    const modules = !!this.store.modulesDoc();
+    cmd("layout-mine", "Show my layout", () => this.store.setArrangement("mine"), "Layout", modules && this.store.arrangement() !== "mine");
+    cmd("layout-modules", "Show the Modules layout", () => this.store.setArrangement("modules"), "Layout", modules && this.store.arrangement() !== "modules");
     cmd("png", "Export PNG image", () => this.export("png"), "Export", has);
     cmd("svg", "Export SVG image", () => this.export("svg"), "Export", has);
     cmd("dbml", "Export DBML file", () => this.export("dbml"), "Ctrl+S", has);

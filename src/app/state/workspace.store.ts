@@ -16,6 +16,8 @@ import { DraftService } from "../persistence/draft.service";
 import { FilterMemoryService } from "../persistence/filter-memory.service";
 import { type MergeConflict, mergeDbml } from "../editor/merge";
 import { CanvasHistory, type HistoryEntry, type LayoutState } from "./canvas-history";
+import { type Arrangement, type Placement, fromSaved, renameInDoc, toSaved } from "./arrangements";
+import type { ModulesDoc } from "../modules/types";
 import { type SchemaChanges, diffSchemas, isEmptyChange } from "./schema-diff";
 import type { Engine } from "../core/tauri-api.service";
 import {
@@ -44,6 +46,10 @@ export interface DocSnapshot {
   layoutKey: string | null;
   activeView: string | null;
   history: CanvasHistory;
+  /** Which arrangement `positions`/`viewport` belong to; the other one is `parked`. */
+  arrangement: Arrangement;
+  parked: Placement | null;
+  modules: ModulesDoc | null;
 }
 
 /** Identity of a source, to find a tab that already shows it (null: always a new tab). */
@@ -90,6 +96,8 @@ export interface DiagramHandle {
   selectAll(): void;
   /** Escape: clears the selection; false when there was nothing to clear. */
   clearSelection(): boolean;
+  /** The viewport now (the one saved through `setViewport` lags behind by a moment). */
+  currentViewport(): Viewport | null;
 }
 
 /** Implemented by the DBML editor; lets the canvas and shortcuts use its undo history. */
@@ -138,6 +146,13 @@ export class WorkspaceStore {
   readonly focusMode = signal(false);
   /** The DBML `DiagramView` currently applied to the visibility, if any. */
   readonly activeView = signal<string | null>(null);
+  /**
+   * Which arrangement `positions` holds: the user's own, or the one Find modules made. The other
+   * one waits in `parked`. Visibility and detail level are shared by both.
+   */
+  readonly arrangement = signal<Arrangement>("mine");
+  /** What Find modules found for this document (null: no Modules arrangement). */
+  readonly modulesDoc = signal<ModulesDoc | null>(null);
   /** Saved viewport to restore when a document is opened (null → fit to screen). */
   readonly initialViewport = signal<Viewport | null>(null);
   /** Bumped when a document is opened or re-arranged, so the diagram re-applies its viewport. */
@@ -181,6 +196,10 @@ export class WorkspaceStore {
 
   private layoutKey: string | null = null;
   private viewport: Viewport | null = null;
+  /** The arrangement not shown: My layout while Modules is shown, else the Modules one (or null). */
+  private parked: Placement | null = null;
+  /** Set by the modules store: lays the modules out again (Auto-arrange while Modules is shown). */
+  moduleArranger: (() => Promise<Record<string, Point> | null>) | null = null;
   private parseTimer: ReturnType<typeof setTimeout> | null = null;
   private layoutSeq = 0;
   private parseSeq = 0;
@@ -362,13 +381,20 @@ export class WorkspaceStore {
     this.schemaChanges.set(null);
     await Promise.all([this.layouts.flush(), this.drafts.flush()]);
     const saved = await this.layouts.load(layoutKey);
+    // A layout still running for the previous document must not land in this one.
+    this.layoutSeq++;
+    this.layingOut.set(false);
     this.layoutKey = layoutKey;
     this.source.set(source);
-    this.positions.set(saved?.positions ?? {});
+    const arranged = fromSaved(saved);
+    this.arrangement.set(arranged.arrangement);
+    this.parked = arranged.parked;
+    this.modulesDoc.set(arranged.modules);
+    this.positions.set(arranged.shown.positions);
     this.hidden.set(new Set(saved?.hidden ?? []));
     this.detail.set(saved?.detail ?? "all");
     this.activeView.set(null);
-    this.viewport = saved?.viewport ?? null;
+    this.viewport = arranged.shown.viewport;
     this.initialViewport.set(this.viewport);
     this.dbml.set(dbml);
     this.baseline.set(baseline);
@@ -392,6 +418,9 @@ export class WorkspaceStore {
       layoutKey: this.layoutKey,
       activeView: this.activeView(),
       history: this.history,
+      arrangement: this.arrangement(),
+      parked: this.parked,
+      modules: this.modulesDoc(),
     };
   }
 
@@ -402,8 +431,13 @@ export class WorkspaceStore {
     if (this.parseTimer) clearTimeout(this.parseTimer);
     this.externalChange.set(null);
     this.schemaChanges.set(null);
+    this.layoutSeq++;
+    this.layingOut.set(false);
     this.source.set(s?.source ?? null);
     this.layoutKey = s?.layoutKey ?? null;
+    this.arrangement.set(s?.arrangement ?? "mine");
+    this.parked = s?.parked ?? null;
+    this.modulesDoc.set(s?.modules ?? null);
     this.positions.set(s?.positions ?? {});
     this.hidden.set(new Set(s?.hidden ?? []));
     this.detail.set(s?.detail ?? "all");
@@ -543,7 +577,9 @@ export class WorkspaceStore {
   // ------------------------------------------------------------------ canvas undo / redo
 
   private layoutState(): LayoutState {
-    return { positions: { ...this.positions() }, hidden: [...this.hidden()] };
+    const state: LayoutState = { positions: { ...this.positions() }, hidden: [...this.hidden()] };
+    if (this.arrangement() !== "mine") state.arrangement = this.arrangement();
+    return state;
   }
 
   /** Runs a layout change and records it for canvas undo. */
@@ -555,7 +591,13 @@ export class WorkspaceStore {
 
   private readonly historyTarget = {
     applyLayout: (s: LayoutState) => {
-      this.positions.set({ ...s.positions });
+      const where = s.arrangement ?? "mine";
+      if (where !== this.arrangement()) {
+        // A step taken in the other arrangement: show it, unless only the visibility changes.
+        if (where === "modules" && !this.modulesDoc()) return;
+        if (!samePositions(s.positions, this.parked?.positions ?? {})) this.setArrangement(where);
+      }
+      if (where === this.arrangement()) this.positions.set({ ...s.positions });
       this.hidden.set(new Set(s.hidden));
       this.activeView.set(null);
       this.persist();
@@ -592,6 +634,10 @@ export class WorkspaceStore {
     if (oldId === newId) return;
     const pos = this.positions()[oldId];
     if (pos) this.positions.set({ ...this.positions(), [newId]: pos });
+    const parked = this.parked?.positions[oldId];
+    if (this.parked && parked) this.parked = { ...this.parked, positions: { ...this.parked.positions, [newId]: parked } };
+    const doc = this.modulesDoc();
+    if (doc) this.modulesDoc.set(renameInDoc(doc, oldId, newId));
     if (this.hidden().has(oldId)) this.hidden.set(new Set([...this.hidden(), newId]));
     this.persist();
   }
@@ -648,20 +694,89 @@ export class WorkspaceStore {
     }
   }
 
-  /** Discards manual positions and lays out every table again. */
+  /**
+   * Discards manual positions and lays out every table again. While the Modules arrangement is
+   * shown, lays out the modules again instead (the user's own layout is not touched).
+   */
   async autoArrange(): Promise<void> {
     const view = this.view();
     if (view.tables.length === 0) return;
+    const modules = this.arrangement() === "modules" ? this.moduleArranger : null;
     await this.run("Arranging…", async () => {
       const seq = ++this.layoutSeq;
-      const laidOut = await layoutTables(view, {});
-      if (seq !== this.layoutSeq) return;
-      this.recordLayout("Auto-arrange", () => this.positions.set(laidOut));
-      this.viewport = null;
-      this.initialViewport.set(null);
-      this.persist();
-      this.documentVersion.update((v) => v + 1);
+      const laidOut = modules ? await modules() : await layoutTables(view, {});
+      if (seq !== this.layoutSeq || !laidOut) return;
+      this.replacePositions(laidOut, modules ? "Arrange modules" : "Auto-arrange");
     });
+  }
+
+  /** New positions for every table of the shown arrangement (one undo step), fitted to screen. */
+  private replacePositions(positions: Record<string, Point>, label: string): void {
+    this.recordLayout(label, () => this.positions.set(positions));
+    this.viewport = null;
+    this.initialViewport.set(null);
+    this.persist();
+    this.documentVersion.update((v) => v + 1);
+  }
+
+  // ------------------------------------------------------------------ arrangements
+
+  /** Shows the user's own layout or the Modules arrangement. Each keeps its viewport. */
+  setArrangement(to: Arrangement): void {
+    if (to === this.arrangement() || !this.parked) return;
+    if (to === "modules" && !this.modulesDoc()) return;
+    const leaving: Placement = { positions: this.positions(), viewport: this.diagram?.currentViewport() ?? this.viewport };
+    const coming = this.parked;
+    this.parked = leaving;
+    this.arrangement.set(to);
+    // A layout still running belongs to the arrangement being left.
+    this.layoutSeq++;
+    this.layingOut.set(false);
+    this.positions.set({ ...coming.positions });
+    this.viewport = coming.viewport;
+    this.initialViewport.set(coming.viewport);
+    this.persist();
+    this.documentVersion.update((v) => v + 1);
+    // Tables added while the other arrangement was shown get a place here.
+    void this.ensureLayout();
+  }
+
+  /**
+   * Replaces what Find modules keeps for this document. With `positions`, they become the
+   * Modules arrangement and it is shown; earlier undo steps taken in it are dropped. `null`
+   * discards the Modules arrangement and goes back to the user's layout.
+   */
+  setModules(doc: ModulesDoc | null, positions?: Record<string, Point>): void {
+    if (!doc) {
+      if (this.arrangement() === "modules") this.setArrangement("mine");
+      this.parked = null;
+      this.modulesDoc.set(null);
+      this.history.forgetLayouts("modules");
+      this.persist();
+      return;
+    }
+    this.modulesDoc.set(doc);
+    if (positions) {
+      this.history.forgetLayouts("modules");
+      if (this.arrangement() === "modules") {
+        this.layoutSeq++;
+        this.layingOut.set(false);
+        this.positions.set(positions);
+        this.viewport = null;
+        this.initialViewport.set(null);
+        this.documentVersion.update((v) => v + 1);
+      } else {
+        this.parked = { positions, viewport: null };
+        this.setArrangement("modules");
+      }
+    }
+    this.persist();
+  }
+
+  /** Positions of the Modules arrangement, shown or not (null when there is none). */
+  modulesPositions(): Record<string, Point> | null {
+    if (!this.modulesDoc()) return null;
+    return this.arrangement() === "modules" ? this.positions() : (this.parked?.positions ?? null);
   }
 
   moveTables(moves: Record<string, Point>): void {
@@ -758,12 +873,13 @@ export class WorkspaceStore {
 
   private persist(): void {
     if (!this.layoutKey) return;
-    this.layouts.save(this.layoutKey, {
-      positions: this.positions(),
-      hidden: [...this.hidden()],
-      viewport: this.viewport ?? undefined,
-      detail: this.detail(),
-    });
+    const state = {
+      arrangement: this.arrangement(),
+      shown: { positions: this.positions(), viewport: this.viewport },
+      parked: this.parked,
+      modules: this.modulesDoc(),
+    };
+    this.layouts.save(this.layoutKey, toSaved(state, [...this.hidden()], this.detail()));
   }
 
   // ------------------------------------------------------------------ export
@@ -835,6 +951,12 @@ export class WorkspaceStore {
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     this.noticeTimer = setTimeout(() => this.notice.set(null), 3500);
   }
+}
+
+function samePositions(a: Record<string, Point>, b: Record<string, Point>): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((k) => b[k] && a[k].x === b[k].x && a[k].y === b[k].y);
 }
 
 /** Where a database's layout is saved. PostgreSQL keeps its original keys, so old layouts still load. */

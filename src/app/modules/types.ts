@@ -68,3 +68,21 @@ export interface ModuleProposal {
   /** Number of tables the proposal was computed on, to notice tables added since. */
   tableCount: number;
 }
+
+/**
+ * What Find modules keeps for a document next to the Modules arrangement's positions (in
+ * `layouts.json`): the DBML has no place for the common tables or a proposal not yet accepted.
+ */
+export interface ModulesDoc {
+  /** Tables the user made common, and detected ones they put back; kept across recomputations. */
+  commonAdded: string[];
+  commonRemoved: string[];
+  /** Common tables of the accepted modules (a pending proposal has its own). */
+  common: string[];
+  /** Found but not yet accepted or rejected. */
+  proposal: ModuleProposal | null;
+  /** What Reject goes back to when the proposal replaced accepted modules (null: discard them). */
+  previous: { positions: Record<string, { x: number; y: number }>; common: string[] } | null;
+  /** Granularity last used (Louvain resolution). */
+  resolution: number;
+}

@@ -1,9 +1,13 @@
 import type { Point } from "../persistence/layout.service";
+import type { Arrangement } from "./arrangements";
 
 /** Table positions and visibility: what layout actions change. */
 export interface LayoutState {
+  /** Positions of the arrangement the step was taken in. */
   positions: Record<string, Point>;
   hidden: string[];
+  /** Absent: the user's own layout. */
+  arrangement?: Arrangement;
 }
 
 export type HistoryEntry =
@@ -59,6 +63,13 @@ export class CanvasHistory {
   clear(): void {
     this.undoStack = [];
     this.redoStack = [];
+  }
+
+  /** Drops the layout steps taken in an arrangement that was replaced or discarded. */
+  forgetLayouts(arrangement: Arrangement): void {
+    const keep = (e: HistoryEntry) => e.kind !== "layout" || (e.before.arrangement ?? "mine") !== arrangement;
+    this.undoStack = this.undoStack.filter(keep);
+    this.redoStack = this.redoStack.filter(keep);
   }
 
   undo(target: HistoryTarget): HistoryResult {

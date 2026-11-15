@@ -27,12 +27,24 @@
   </button>
   <div class="menu-wrap">
     <button type="button" class="btn views" (click)="viewsOpen.set(!viewsOpen())" [attr.aria-expanded]="viewsOpen()"
-      [disabled]="!store.view().tables.length" title="Saved views: named subsets of tables, stored in the DBML">
-      View: {{ store.activeView() ?? "All tables" }} ▾
+      [disabled]="!store.view().tables.length" title="Layouts, and saved views: named subsets of tables, stored in the DBML">
+      View: {{ store.activeView() ?? "All tables" }}{{ store.arrangement() === "modules" ? " · Modules" : "" }} ▾
     </button>
     @if (viewsOpen()) {
       <div class="menu-scrim" (click)="viewsOpen.set(false)"></div>
       <div class="menu views-menu" role="menu">
+        <div class="menu-label">Layout</div>
+        <button type="button" role="menuitemradio" [attr.aria-checked]="store.arrangement() === 'mine'"
+          (click)="store.setArrangement('mine'); viewsOpen.set(false)" title="Your own table positions">
+          <span>My layout</span><span class="check">{{ store.arrangement() === "mine" ? "✓" : "" }}</span>
+        </button>
+        <button type="button" role="menuitemradio" [attr.aria-checked]="store.arrangement() === 'modules'" [disabled]="!store.modulesDoc()"
+          (click)="store.setArrangement('modules'); viewsOpen.set(false)"
+          [title]="store.modulesDoc() ? 'The tables arranged by module (your own layout is kept)' : 'Find modules first'">
+          <span>Modules</span><span class="check">{{ store.arrangement() === "modules" ? "✓" : "" }}</span>
+        </button>
+        <div class="menu-sep"></div>
+        <div class="menu-label">Tables</div>
         <button type="button" role="menuitemradio" [attr.aria-checked]="!store.activeView()"
           (click)="store.applyView(null); viewsOpen.set(false)">
           <span>All tables</span><span class="check">{{ store.activeView() ? "" : "✓" }}</span>
@@ -57,7 +69,7 @@
     }
   </div>
   <button type="button" class="btn" (click)="store.autoArrange()" [disabled]="!store.view().tables.length"
-    title="Discard manual positions and lay out all tables again">Auto-arrange</button>
+    [title]="store.arrangement() === 'modules' ? 'Lay out the modules again (your own layout is not changed)' : 'Discard manual positions and lay out all tables again'">Auto-arrange</button>
   <div class="menu-wrap">
     <button type="button" class="btn" (click)="exportOpen.set(!exportOpen())" [attr.aria-expanded]="exportOpen()"
       [disabled]="!store.dbml().trim()">Export ▾</button>

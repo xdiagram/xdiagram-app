@@ -7,7 +7,7 @@ const file: Source = { kind: "file", path: "C:\Data\Shop.dbml", label: "Shop.dbm
 const pasted: Source = { kind: "file", path: "", label: "Pasted SQL", detail: "", dialect: "mysql" };
 
 function snap(source: Source | null, dbml = "Table t { id int }"): DocSnapshot {
-  return { source, dbml, baseline: dbml, positions: {}, hidden: [], detail: "all", viewport: null, layoutKey: null, activeView: null, history: new CanvasHistory() };
+  return { source, dbml, baseline: dbml, positions: {}, hidden: [], detail: "all", viewport: null, layoutKey: null, activeView: null, history: new CanvasHistory(), arrangement: "mine", parked: null, modules: null };
 }
 
 describe("tab helpers", () => {

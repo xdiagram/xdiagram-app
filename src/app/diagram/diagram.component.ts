@@ -1706,6 +1706,15 @@ export class DiagramComponent implements DiagramHandle {
     return true;
   }
 
+  currentViewport(): Viewport | null {
+    const stage = this.stage;
+    if (!stage) return null;
+    // The debounced save would otherwise land in the arrangement shown next.
+    if (this.viewportTimer) clearTimeout(this.viewportTimer);
+    this.viewportTimer = null;
+    return { x: Math.round(stage.x()), y: Math.round(stage.y()), scale: +stage.scaleX().toFixed(4) };
+  }
+
   /**
    * Shift+drag on the empty background draws a selection box; the tables it touches join the
    * selection. Called in the capture phase, before Konva would start panning the stage.

@@ -1,6 +1,9 @@
 import { Injectable } from "@angular/core";
 import { LazyStore } from "@tauri-apps/plugin-store";
 
+import type { ModulesDoc } from "../modules/types";
+import { normalizeLayout } from "../state/arrangements";
+
 export interface Point {
   x: number;
   y: number;
@@ -14,12 +17,22 @@ export interface Viewport {
 
 /** Everything about how a diagram looks that is not in the DBML itself. */
 export interface SavedLayout {
-  /** Table id (`schema.table`) → top-left position in diagram coordinates. */
+  /** Table id (`schema.table`) → top-left position in diagram coordinates: the user's own layout. */
   positions: Record<string, Point>;
   hidden: string[];
+  /** Viewport of the user's own layout. */
   viewport?: Viewport;
   /** "all" | "keys" | "names" — how much of each table is drawn. */
   detail?: "all" | "keys" | "names";
+  /** Set while the Modules arrangement is shown. */
+  arrangement?: "modules";
+  /** The arrangement Find modules made, with what it found. */
+  modules?: SavedModules;
+}
+
+export interface SavedModules extends ModulesDoc {
+  positions: Record<string, Point>;
+  viewport?: Viewport;
 }
 
 /** Diagram layouts in `layouts.json`, keyed by database identity or file path. */
@@ -33,7 +46,7 @@ export class LayoutService {
     const queued = this.pending.get(key);
     if (queued) return structuredClone(queued);
     try {
-      return (await this.store.get<SavedLayout>(key)) ?? null;
+      return normalizeLayout(await this.store.get<unknown>(key));
     } catch {
       return null;
     }
