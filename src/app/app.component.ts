@@ -37,6 +37,7 @@ import { BrowserStore } from "./state/browser.store";
 import { WorkloadStore } from "./state/workload.store";
 import { ModulesStore } from "./state/modules.store";
 import { JoinPathStore } from "./state/join-path.store";
+import { parsePathQuery, pathCandidates, matchTables } from "./paths/path-query";
 import { WorkspaceStore } from "./state/workspace.store";
 
 const EDITOR_WIDTH_KEY = "xdiagram.editorWidth";
@@ -107,6 +108,10 @@ export class AppComponent {
   protected readonly exportOpen = signal(false);
   protected readonly viewsOpen = signal(false);
   protected readonly paletteOpen = signal(false);
+  /** Text already typed when the palette opens (e.g. `path orders → `). */
+  protected readonly paletteQuery = signal("");
+  /** Items only offered for the selection at the time the palette opened (it is not a signal). */
+  protected readonly paletteExtras = signal<PaletteItem[]>([]);
   protected readonly settingsOpen = signal(false);
   protected readonly aboutOpen = signal(false);
   /** The "Changes in <database>" dialog behind the schema-changes banner. */
@@ -232,6 +237,15 @@ export class AppComponent {
       document.title = title;
       void getCurrentWindow().setTitle(title).catch(() => undefined);
     });
+    // "Find join path to…" on a table: the palette, with that table typed.
+    effect(() => {
+      const query = this.joinPaths.paletteRequest();
+      if (query === null) return;
+      untracked(() => {
+        this.joinPaths.paletteRequest.set(null);
+        this.openPalette(query);
+      });
+    });
     // Finding modules shows their panel.
     effect(() => {
       if (!this.modules.revealRequests()) return;
@@ -249,6 +263,45 @@ export class AppComponent {
       }
     });
   }
+
+  /** Opens the palette, with `query` typed; two selected tables offer their join path first. */
+  protected openPalette(query = ""): void {
+    const sel = this.store.diagram?.selectedTables() ?? [];
+    const path = (from: string, to: string): PaletteItem => ({
+      id: `path:${from}>${to}`,
+      kind: "command",
+      label: `Path: ${displayTable(from)} → ${displayTable(to)}`,
+      detail: "Join path",
+      run: () => this.joinPaths.show(from, to),
+    });
+    this.paletteExtras.set(sel.length === 2 ? [path(sel[0], sel[1]), path(sel[1], sel[0])] : []);
+    this.paletteQuery.set(query);
+    this.paletteOpen.set(true);
+  }
+
+  /** `path a → b` in the palette: join paths between the tables that match. */
+  protected readonly pathProvider = (query: string): PaletteItem[] | null => {
+    const q = parsePathQuery(query);
+    if (!q) return null;
+    const tables = this.store.view().tables.map((t) => t.id);
+    if (q.to === null) {
+      // Only the start so far: pick it, then type the end.
+      return matchTables(q.from, tables, 6).map(({ id }) => ({
+        id: `pathfrom:${id}`,
+        kind: "command",
+        label: `Path: ${displayTable(id)} → …`,
+        detail: "then type the other table",
+        run: () => this.openPalette(`path ${displayTable(id)} → `),
+      }));
+    }
+    return pathCandidates(q, tables).map(({ from, to }) => ({
+      id: `path:${from}>${to}`,
+      kind: "command",
+      label: `Path: ${displayTable(from)} → ${displayTable(to)}`,
+      detail: "Join path",
+      run: () => this.joinPaths.show(from, to),
+    }));
+  };
 
   /** Shows the Modules panel; finds the modules the first time. */
   protected async findModules(): Promise<void> {
@@ -407,7 +460,7 @@ export class AppComponent {
     }
     if (key === "k" || key === "p") {
       e.preventDefault();
-      this.paletteOpen.set(true);
+      this.openPalette();
       return;
     }
     // Ctrl+A on the canvas selects every table (in text fields it keeps selecting text).

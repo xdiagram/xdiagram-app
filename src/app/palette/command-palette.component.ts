@@ -2,6 +2,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   ElementRef,
+  type OnInit,
   afterNextRender,
   computed,
   input,
@@ -80,8 +81,12 @@ const KIND_LABEL: Record<PaletteItem["kind"], string> = {
     kbd { font-family: var(--font); font-size: 10.5px; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin: 0 2px; }
   `,
 })
-export class CommandPaletteComponent {
+export class CommandPaletteComponent implements OnInit {
   readonly items = input.required<PaletteItem[]>();
+  /** Text already typed when the palette opens. */
+  readonly initialQuery = input("");
+  /** Answers a query itself (e.g. `path a → b`), or returns null for the usual search. */
+  readonly provider = input<((query: string) => PaletteItem[] | null) | null>(null);
   readonly closed = output<void>();
 
   protected readonly query = signal("");
@@ -92,6 +97,8 @@ export class CommandPaletteComponent {
   /** Empty query: commands and views first; otherwise everything ranked by match quality. */
   protected readonly results = computed(() => {
     const q = this.query();
+    const provided = this.provider()?.(q);
+    if (provided) return provided.map((item) => ({ item, match: { score: 0, positions: [] as number[] } }));
     const items = this.items();
     if (!q.trim()) {
       const first = items.filter((i) => i.kind === "command" || i.kind === "view");
@@ -102,7 +109,15 @@ export class CommandPaletteComponent {
   });
 
   constructor() {
-    afterNextRender(() => this.input().nativeElement.focus());
+    afterNextRender(() => {
+      const el = this.input().nativeElement;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  }
+
+  ngOnInit(): void {
+    this.query.set(this.initialQuery());
   }
 
   protected onInput(value: string): void {

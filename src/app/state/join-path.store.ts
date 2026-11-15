@@ -57,6 +57,8 @@ export class JoinPathStore {
   readonly searching = signal(false);
   /** A change asks the canvas to fit the shown path. */
   readonly fitRequests = signal(0);
+  /** Asks the app to open the palette with this text (Find join path to…). */
+  readonly paletteRequest = signal<string | null>(null);
 
   readonly active = computed(() => !!this.ends());
   /** X-ray's report, or the one Find modules read: never read again for this. */

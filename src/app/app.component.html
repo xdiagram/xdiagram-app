@@ -238,7 +238,8 @@
 }
 
 @if (paletteOpen()) {
-  <app-command-palette [items]="paletteItems()" (closed)="paletteOpen.set(false)" />
+  <app-command-palette [items]="paletteExtras().concat(paletteItems())" [initialQuery]="paletteQuery()" [provider]="pathProvider"
+    (closed)="paletteOpen.set(false)" />
 }
 
 @if (store.importRequest(); as req) {

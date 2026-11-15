@@ -1201,6 +1201,9 @@ export class DiagramComponent implements DiagramHandle {
         // Click then Shift+click: the first table clicked is the start.
         if (ids.length === 2) this.joinPaths.show(ids[0], ids[1]);
         break;
+      case "joinPathTo":
+        if (box) this.joinPaths.paletteRequest.set(`path ${displayTable(box.table.id)} → `);
+        break;
       case "hide":
         if (ids.length > 1) {
           this.store.setHidden(ids, true);

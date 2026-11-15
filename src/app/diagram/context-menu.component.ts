@@ -27,6 +27,7 @@ export type CanvasMenuAction =
   | { kind: "profile" }
   | { kind: "query" }
   | { kind: "joinPath" }
+  | { kind: "joinPathTo" }
   | { kind: "hide" }
   | { kind: "showOnly" }
   | { kind: "isolate" }
@@ -80,6 +81,7 @@ export type CanvasMenuAction =
         <button type="button" role="menuitem" (click)="pick({ kind: 'profile' })">Profile data</button>
         <button type="button" role="menuitem" (click)="pick({ kind: 'query' })">Add to query</button>
       }
+      <button type="button" role="menuitem" (click)="pick({ kind: 'joinPathTo' })" title="Type the other table: the best ways to join them">Find join path to…</button>
       <button type="button" role="menuitem" (click)="pick({ kind: 'reveal' })">Reveal in editor</button>
       <button type="button" role="menuitem" (click)="pick({ kind: 'hide' })">Hide from diagram</button>
       <button type="button" role="menuitem" (click)="pick({ kind: 'isolate' })">Show only this &amp; related</button>
