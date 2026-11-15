@@ -44,6 +44,9 @@ every change made on the canvas is an edit to it.
   - Detail levels: all columns, keys only, names only.
   - Focus mode (F): fades tables more than one hop from the selection.
   - Saved views stored as DBML `DiagramView` blocks.
+  - **Find modules**: groups the tables by how they work together (X-ray's join traffic on
+    PostgreSQL, else the declared relationships), in a layout of its own next to yours. Accepted
+    modules become coloured `TableGroup`s, and a click on one opens it as a saved view (see below).
   - Parallel edge lanes so relationships sharing a side don't overlap.
   - Hundreds of tables stay smooth: parsing, completion and layout run off the main thread, and
     the canvas draws only what is on screen, in less detail when zoomed out (see below).
@@ -99,7 +102,8 @@ every change made on the canvas is an edit to it.
   outliers and very wide tables.
   - Findings link to the table and the editor line, and tables get a badge on the diagram.
   - Each rule can be turned off.
-- **Per database / file**: table positions, hidden tables, viewport and detail level are remembered.
+- **Per database / file**: table positions, hidden tables, viewport and detail level are remembered,
+  and the Modules layout next to yours.
 - **Your DBML on a database tab is kept.** Header colours, saved views, groups, notes and refs
   you add stay with that database, also after closing the tab or the app (there is nothing to
   save). On **Refresh**, or the next time you connect, what changed in the database is merged
@@ -431,6 +435,57 @@ What made the difference:
 - Parsing, lint and editor completion run in a Web Worker (`src/app/core/parse.worker.ts`). It uses
   `@dbml/parse` and `@dbml/core`'s model classes only, not its SQL parsers (0.6 MB instead of ~16 MB).
 - ELK lays out in its own worker, started while the app is idle.
+
+## Finding modules
+
+At a few hundred tables any diagram is a wall, and grouping by schema or name prefix says how the
+database was named, not how it works. **Find modules** (View menu, the palette, or the Modules tab
+of the side panel) groups the tables that work together:
+
+- **The graph.** Tables are nodes. On PostgreSQL the edges are weighted by how often the tables
+  are joined in `pg_stat_statements` (X-ray's analysis, read-only; it runs for Find modules even
+  with the X-ray overlay off), plus a fixed weight for each declared relationship, so traffic shifts
+  the weights without drowning the structure. Without the extension, and on MySQL, SQL Server,
+  SQLite and `.dbml` files, the declared relationships are used alone; the panel says which.
+- **The modules** are Louvain communities on that graph, split into connected parts, with tiny ones
+  joined to their closest neighbour. The algorithm is deterministic: the same schema always gives
+  the same modules, and they are only recomputed when you ask. Coarser / Normal / Finer changes
+  their size.
+- **Common tables.** Tables linked to far more tables than the rest (`users`, `tenants`) would pull
+  every module into one. They are left out of the calculation and shown in their own zone. A table
+  whose links mostly stay in one module is that module's centre instead (`products` with its
+  images and prices). You can make a table common, or put a detected one back, in the panel.
+  Tables linked only to a common table form that table's own module.
+- **Names** come from each module's central table (the one with the most links inside it), made
+  unique; rename them and change their colours in the panel.
+
+The modules come in a **layout of their own**: each module laid out on its own and packed with the
+modules it is most linked to, common tables in a strip on top, each module in a coloured zone.
+View → Layout switches between it and **My layout**, which is never changed; each keeps its
+viewport, and Auto-arrange on the Modules layout lays the modules out again. Far out, each zone
+shows its name in large type.
+
+Until you **Accept**, nothing is in the DBML. Accept writes the modules as `TableGroup` blocks
+with their colour, in one undoable edit:
+
+- Existing TableGroups are kept. **Find** only adds new tables to them, so the modules stay stable
+  as the schema grows. **Recompute all** recomputes everything; modules that overlap an existing
+  group continue it (same name and colour), and the panel lists the tables that would move and the
+  groups that would be removed.
+- Existing groups are edited in place (notes and comments kept); members written as aliases are
+  left alone, and the result is checked by parsing it before anything is written.
+- **Reject** discards the proposal and goes back to the modules accepted before, if any.
+
+A click on a zone's name opens that module as a saved view: the `DiagramView` of the same name, or
+a new one with the module's tables and the common tables they link to.
+
+On the 300-table bench schema (as a `.dbml` file, declared relationships only), finding and laying
+out the modules takes about 0.2 s; it finds ten modules that follow the schemas the synthetic
+foreign keys were planted in.
+
+Code: `src/app/modules/` (graph, common tables, Louvain, modules, packing and TableGroup text, all
+pure and unit-tested), `src/app/state/modules.store.ts`, `src/app/state/arrangements.ts` and
+`src/app/sidebar/modules-panel.component.ts`.
 
 ## Releases and updates
 
