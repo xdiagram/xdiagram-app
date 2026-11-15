@@ -171,6 +171,10 @@
 @if (store.error() ?? workload.error(); as err) {
   <div class="banner" role="alert">
     <span>{{ err }}</span>
+    @if (report.available()) {
+      <button type="button" class="text-btn" (click)="report.open(err)"
+        title="Opens a GitHub issue form in your browser with this error filled in. Check it for anything private before you submit it.">Report</button>
+    }
     <button type="button" (click)="dismissErrors()" aria-label="Dismiss">×</button>
   </div>
 }

@@ -25,6 +25,9 @@ every change made on the canvas is an edit to it.
   spinner. On PostgreSQL the running statement is cancelled on the server too.
 - **Settings** (gear button, Ctrl+,): theme (system, light, dark), editor font size, query time
   limit, profiling sample size, session restore, automatic reload of changed files, update checks.
+- **Report a problem** (About xdiagram, the palette, or **Report** on an error): opens a GitHub
+  issue form in your browser with the app's version, Windows and WebView2 versions and the kind of
+  document open filled in (never names), plus the error when there is one.
 - **DBML editor** (Monaco):
   - Highlighting and autocomplete for tables, columns, settings and enums (Ctrl+Space).
   - Go to definition (F12 / Ctrl+click) and find usages (Shift+F12).
@@ -156,6 +159,8 @@ App safety:
 - Saves go to a temporary file that then replaces the original, so a crash never leaves half a
   file. The app's own settings files are checked at start-up and restored from the previous
   start's copy if one was damaged.
+- **Report a problem** sends nothing: it opens the issue form in your browser, where you read it
+  (and remove anything private from a copied error) before submitting it, or not.
 
 ## Filtering rows
 

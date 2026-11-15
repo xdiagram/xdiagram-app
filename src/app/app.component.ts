@@ -37,6 +37,7 @@ import { BrowserStore } from "./state/browser.store";
 import { WorkloadStore } from "./state/workload.store";
 import { ModulesStore } from "./state/modules.store";
 import { JoinPathStore } from "./state/join-path.store";
+import { ReportService } from "./core/report.service";
 import { parsePathQuery, pathCandidates, matchTables } from "./paths/path-query";
 import { WorkspaceStore } from "./state/workspace.store";
 
@@ -98,6 +99,7 @@ export class AppComponent {
   protected readonly workload = inject(WorkloadStore);
   protected readonly modules = inject(ModulesStore);
   private readonly joinPaths = inject(JoinPathStore);
+  protected readonly report = inject(ReportService);
   private readonly docs = inject(DocsService);
   protected readonly ddl = inject(DdlService);
   protected readonly lint = inject(LintStore);
@@ -144,6 +146,7 @@ export class AppComponent {
     cmd("settings", "Settings…", () => this.settingsOpen.set(true), "Ctrl+,");
     cmd("about", "About xdiagram", () => this.aboutOpen.set(true), "Help");
     cmd("updates", "Check for updates", () => this.checkForUpdates(), "Help");
+    cmd("report", "Report a problem…", () => void this.report.open(), "Help", this.report.available());
     cmd("open", "Open a .dbml, .sql or schema.rb file", () => void this.store.openFile(), "Ctrl+O");
     cmd("save", "Save", () => void this.store.save(), "Ctrl+S", this.store.dbml().trim().length > 0);
     cmd("save-as", "Save as .dbml…", () => void this.store.saveAs(), "Ctrl+Shift+S", this.store.dbml().trim().length > 0);

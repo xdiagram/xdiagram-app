@@ -1,0 +1,39 @@
+name: Report a problem
+description: Something in xdiagram does not work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting it. Please leave out anything private: passwords, host names, data, or table names you would rather not share.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What were you doing, and what went wrong? An error message helps.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Connect to a PostgreSQL database
+        2. Open X-ray
+        3. …
+  - type: input
+    id: version
+    attributes:
+      label: xdiagram version
+      description: About xdiagram (palette, or the link at the bottom of Settings).
+      placeholder: "0.4.0"
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Filled in by the app's Report a problem link. Only versions and the kind of database, never names.
+      render: text

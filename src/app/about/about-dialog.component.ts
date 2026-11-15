@@ -1,6 +1,7 @@
 import { Component, inject, output } from "@angular/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
+import { ReportService } from "../core/report.service";
 import { UpdateService } from "../core/update.service";
 import { DraggableDialogDirective } from "../core/draggable-dialog.directive";
 
@@ -34,6 +35,7 @@ import { DraggableDialogDirective } from "../core/draggable-dialog.directive";
           <a href="#" (click)="open($event, releases)">Releases</a>
           @if (updates.projectUrl(); as project) {
             · <a href="#" (click)="open($event, project)">Project page</a>
+            · <a href="#" (click)="$event.preventDefault(); report.open()" title="Opens a GitHub issue form in your browser, with the app's version filled in. Nothing is sent until you submit it.">Report a problem</a>
           }
         </p>
       }
@@ -89,6 +91,7 @@ import { DraggableDialogDirective } from "../core/draggable-dialog.directive";
 export class AboutDialogComponent {
   readonly closed = output<void>();
   protected readonly updates = inject(UpdateService);
+  protected readonly report = inject(ReportService);
 
   protected readonly credits = [
     { name: "Tauri", license: "Apache-2.0 / MIT" },
