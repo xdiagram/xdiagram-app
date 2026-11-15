@@ -353,7 +353,7 @@ npm run tauri dev      # development
 npm run release        # signed installers + latest.json (see "Releases and updates")
 npm test               # frontend unit tests (Vitest)
 npm run test:scripts   # tests of the release script
-cd src-tauri && cargo test
+cd src-tauri && cargo test --workspace   # Rust tests, the app and src-tauri/crates/*
 ```
 
 `npm run tauri build` also works for a quick local installer, but it fails at the end without the

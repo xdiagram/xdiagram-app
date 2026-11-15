@@ -2774,6 +2774,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "join-paths"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7666,6 +7674,7 @@ name = "xdiagram"
 version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
+ "join-paths",
  "keyring",
  "mysql_async",
  "notify",

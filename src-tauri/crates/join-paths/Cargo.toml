@@ -1,0 +1,12 @@
+[package]
+name = "join-paths"
+version = "0.1.0"
+description = "Join paths between the tables of a schema graph: pure, no I/O, no Tauri"
+edition = "2024"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

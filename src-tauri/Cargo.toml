@@ -1,3 +1,7 @@
+[workspace]
+# Pure libraries the app uses, kept free of Tauri so other tools can use them too.
+members = ["crates/join-paths"]
+
 [package]
 name = "xdiagram"
 version = "0.3.0"
@@ -42,6 +46,7 @@ rusqlite = { version = "0.42", features = ["bundled"] }
 russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+join-paths = { path = "crates/join-paths" }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
