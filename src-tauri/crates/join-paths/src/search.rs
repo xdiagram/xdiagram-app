@@ -163,8 +163,7 @@ fn shortest(ix: &Index, src: usize, dst: usize, max_hops: usize, banned: &[bool]
         let (done, rest) = best.split_at_mut(h);
         let (last, cur) = (&done[h - 1], &mut rest[0]);
         let mut reached = false;
-        for u in 0..n {
-            let du = last[u];
+        for (u, &du) in last.iter().enumerate() {
             if du == NONE || u == dst {
                 continue;
             }
