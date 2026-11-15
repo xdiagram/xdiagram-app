@@ -3,6 +3,7 @@ name = "join-paths"
 version = "0.1.0"
 description = "Join paths between the tables of a schema graph: pure, no I/O, no Tauri"
 edition = "2024"
+license = "AGPL-3.0-or-later"
 publish = false
 
 [dependencies]

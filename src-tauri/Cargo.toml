@@ -5,8 +5,9 @@ members = ["crates/join-paths"]
 [package]
 name = "xdiagram"
 version = "0.4.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Database diagrams from PostgreSQL, MySQL, SQL Server and SQLite, as editable DBML"
+authors = ["the xdiagram authors"]
+license = "AGPL-3.0-or-later"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

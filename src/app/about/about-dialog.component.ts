@@ -40,6 +40,16 @@ import { DraggableDialogDirective } from "../core/draggable-dialog.directive";
         </p>
       }
 
+      <p class="legal">
+        Copyright © 2026 the xdiagram authors. xdiagram is free software: you can redistribute it and modify it under the
+        terms of the GNU Affero General Public License, version 3 or (at your option) any later version. It comes with
+        no warranty.
+        @if (updates.projectUrl(); as project) {
+          <a href="#" (click)="open($event, project + '/blob/main/LICENSE')">License</a> ·
+          <a href="#" (click)="open($event, project)">Source code</a>
+        }
+      </p>
+
       <div class="update">
         <button type="button" (click)="updates.check(true)" [disabled]="updates.checking() || !updates.configured()">
           {{ updates.checking() ? "Checking…" : "Check for updates" }}
@@ -72,7 +82,8 @@ import { DraggableDialogDirective } from "../core/draggable-dialog.directive";
     h2 { margin: 0; font-size: 18px; }
     p { margin: 0; line-height: 1.5; }
     .version { color: var(--text-muted); font-size: 12.5px; }
-    .links a { color: var(--accent); }
+    .links a, .legal a { color: var(--accent); }
+    .legal { color: var(--text-muted); font-size: 12px; }
     .update { display: flex; align-items: center; gap: 10px; }
     .update button { font: inherit; font-size: 12.5px; border: 1px solid var(--border); background: var(--panel); color: var(--text);
       border-radius: 7px; padding: 5px 12px; cursor: pointer; flex: none; }

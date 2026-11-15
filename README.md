@@ -670,3 +670,17 @@ The report lists:
 - `legacy_notes` as idle
 - index suggestions for the unindexed `events` columns, the `external_ref` filter, and the unused
   and duplicate indexes
+
+## License
+
+Copyright (C) 2026 the xdiagram authors.
+
+xdiagram is free software: you can redistribute it and/or modify it under the terms of the GNU
+Affero General Public License as published by the Free Software Foundation, either version 3 of
+the License, or (at your option) any later version. It is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the full text.
+
+This covers the whole repository, the join-path engine in `src-tauri/crates/join-paths` included.
+The libraries xdiagram is built on keep their own licenses (MIT, Apache-2.0, ISC; ELK is used under
+its GPL-3.0-or-later option); About xdiagram lists them.
