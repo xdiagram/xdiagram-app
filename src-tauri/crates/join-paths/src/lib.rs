@@ -7,5 +7,7 @@
 
 pub mod cost;
 pub mod graph;
+pub mod search;
 
 pub use graph::{ColumnPair, Edge, EdgeKind, Multiplicity, SchemaGraph, TableNode};
+pub use search::{InputError, JoinPath, NoPathReason, PathOpts, PathOutcome, PathStep, StepVariant, find_join_paths};

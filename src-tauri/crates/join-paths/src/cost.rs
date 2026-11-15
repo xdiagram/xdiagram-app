@@ -18,13 +18,14 @@ pub fn traffic_share(calls: u64, max_calls: u64) -> f64 {
 }
 
 /// Cost of one join. A declared foreign key costs 0.8–1.0 (cheaper when it is joined often), a join
-/// seen only in the query traffic 1.2–2.0 (cheaper the more often it runs): a declared FK is always
-/// cheaper than any discovered join, and one busy discovered join beats two declared hops.
+/// seen only in the query traffic 1.2–2.4 (cheaper the more often it runs). A declared FK is always
+/// cheaper than any discovered join; one busy discovered join beats two declared hops, and a rare
+/// one loses to them (break-even at about the cube root of the busiest join's calls).
 pub fn edge_cost(kind: EdgeKind, calls: u64, max_calls: u64) -> u64 {
     let t = traffic_share(calls, max_calls);
     let cost = match kind {
         EdgeKind::Declared => 1.0 - 0.2 * t,
-        EdgeKind::Discovered => 2.0 - 0.8 * t,
+        EdgeKind::Discovered => 2.4 - 1.2 * t,
     };
     (cost * UNIT as f64).round() as u64
 }
@@ -54,14 +55,16 @@ mod tests {
         assert_eq!(edge_cost(EdgeKind::Declared, 0, 0), 1000);
         assert_eq!(edge_cost(EdgeKind::Declared, 1_000_000, 1_000_000), 800);
         assert_eq!(edge_cost(EdgeKind::Discovered, 1_000_000, 1_000_000), 1200);
-        assert_eq!(edge_cost(EdgeKind::Discovered, 1, 1_000_000), 1960);
-        assert_eq!(edge_cost(EdgeKind::Discovered, 0, 0), 2000);
+        assert_eq!(edge_cost(EdgeKind::Discovered, 1, 1_000_000), 2340);
+        assert_eq!(edge_cost(EdgeKind::Discovered, 0, 0), 2400);
     }
 
     #[test]
-    fn a_busy_discovered_join_beats_two_declared_hops() {
-        let busy = edge_cost(EdgeKind::Discovered, 5000, 5000);
-        assert!(busy < 2 * edge_cost(EdgeKind::Declared, 5000, 5000));
+    fn a_busy_discovered_join_beats_two_declared_hops_a_rare_one_does_not() {
+        let two_declared = 2 * edge_cost(EdgeKind::Declared, 0, 1_000_000);
+        assert!(edge_cost(EdgeKind::Discovered, 1_000_000, 1_000_000) < two_declared);
+        assert!(edge_cost(EdgeKind::Discovered, 1000, 1_000_000) < two_declared);
+        assert!(edge_cost(EdgeKind::Discovered, 50, 1_000_000) > two_declared);
     }
 
     #[test]
