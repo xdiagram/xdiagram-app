@@ -4,7 +4,7 @@ members = ["crates/join-paths"]
 
 [package]
 name = "xdiagram"
-version = "0.4.0"
+version = "0.4.1"
 description = "Database diagrams from PostgreSQL, MySQL, SQL Server and SQLite, as editable DBML"
 authors = ["the xdiagram authors"]
 license = "AGPL-3.0-or-later"
