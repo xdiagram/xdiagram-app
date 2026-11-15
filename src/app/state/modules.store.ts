@@ -3,7 +3,7 @@ import { Injectable, computed, inject, signal } from "@angular/core";
 import { loadDbmlCore } from "../core/dbml";
 import { TauriApi, errorMessage } from "../core/tauri-api.service";
 import { type ModuleLayoutPlan, layoutModules } from "../diagram/layout";
-import type { VGroup, ViewModel } from "../diagram/view-model";
+import { type VGroup, type ViewModel, relatedTables } from "../diagram/view-model";
 import { RESOLUTIONS, findModules, isValidModuleName } from "../modules/find-modules";
 import { type TrafficReport, collectLinks } from "../modules/graph";
 import { type GroupTarget, writeModuleGroups } from "../modules/module-text";
@@ -288,9 +288,27 @@ export class ModulesStore {
     this.workspace.flash("Proposal discarded");
   }
 
+  /**
+   * Shows a TableGroup as a saved view: the one named like it, else a new view with its tables and
+   * the common tables they link to (saved in the DBML).
+   */
+  async openModuleView(g: VGroup): Promise<void> {
+    const view = this.workspace.view();
+    if (view.views.some((v) => v.name === g.name)) this.workspace.applyView(g.name);
+    else {
+      const common = new Set(this.doc()?.common ?? []);
+      const near = [...relatedTables(view.refs, g.tables)].filter((t) => common.has(t));
+      this.workspace.showOnly(new Set([...g.tables, ...near]), `Show ${g.name}`);
+      await this.workspace.saveView(g.name);
+    }
+    this.selected.set(g.id);
+    setTimeout(() => this.workspace.diagram?.fitTo(g.tables), 0);
+  }
+
   /** Shows the tables of one module on the canvas (switching to the Modules arrangement). */
-  showModule(key: string, tables: readonly string[]): void {
+  showModule(key: string, tables: readonly string[], reveal = false): void {
     this.selected.set(key);
+    if (reveal) this.revealRequests.update((n) => n + 1);
     if (this.workspace.arrangement() !== "modules") this.workspace.setArrangement("modules");
     const hidden = tables.filter((t) => this.workspace.hidden().has(t));
     if (hidden.length) this.workspace.setHidden(hidden, false);

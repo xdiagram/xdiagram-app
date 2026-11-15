@@ -52,7 +52,7 @@ import {
 } from "./geometry";
 import { sceneToSvg } from "./svg-export";
 import { DiagramPalette, FONT_FAMILY, LIGHT, MONO_FAMILY, currentPalette, zoneStyle } from "./theme";
-import { displayTable, relatedTables, type VField, type VRef, type VTable, type ViewModel } from "./view-model";
+import { displayTable, relatedTables, type VField, type VGroup, type VRef, type VTable, type ViewModel } from "./view-model";
 
 interface Tooltip {
   x: number;
@@ -377,6 +377,8 @@ export class DiagramComponent implements DiagramHandle {
   private stage: Konva.Stage | null = null;
   private layer!: Konva.Layer;
   private groupsLayer!: Konva.Group;
+  /** Large zone names for far zoom: above the tables, which would hide them otherwise. */
+  private zoneTitles!: Konva.Group;
   private edgesLayer!: Konva.Group;
   private tablesLayer!: Konva.Group;
   private palette: DiagramPalette = currentPalette();
@@ -481,10 +483,12 @@ export class DiagramComponent implements DiagramHandle {
     const host = this.hostRef().nativeElement;
     this.stage = new Konva.Stage({ container: host, width: host.clientWidth, height: host.clientHeight, draggable: true });
     this.layer = new Konva.Layer();
-    this.groupsLayer = new Konva.Group({ listening: false });
+    // Only the zones' name labels listen (they open the module); tables are drawn above them.
+    this.groupsLayer = new Konva.Group();
     this.edgesLayer = new Konva.Group();
     this.tablesLayer = new Konva.Group();
-    this.layer.add(this.groupsLayer, this.edgesLayer, this.tablesLayer);
+    this.zoneTitles = new Konva.Group({ listening: false });
+    this.layer.add(this.groupsLayer, this.edgesLayer, this.tablesLayer, this.zoneTitles);
     this.stage.add(this.layer);
 
     const stage = this.stage;
@@ -572,8 +576,7 @@ export class DiagramComponent implements DiagramHandle {
     const ev = this.evidence();
     if (ev && !this.scene.edges.some((e) => e.ref.id === ev.ref.id)) this.evidence.set(null);
 
-    this.groupsLayer.destroyChildren();
-    for (const g of this.scene.groups) this.groupsLayer.add(this.drawGroup(g));
+    this.drawGroups(this.scene.groups);
 
     // Unchanged relationships and tables keep their nodes: typing in one table or moving one
     // rebuilds only what changed.
@@ -692,6 +695,7 @@ export class DiagramComponent implements DiagramHandle {
         v.shown = shown;
       }
     }
+    this.updateZoneLabels(level, s);
   }
 
   /** Row dividers and a large name, shown instead of the rows at mid zoom. */
@@ -726,17 +730,77 @@ export class DiagramComponent implements DiagramHandle {
     v.lint?.moveToTop();
   }
 
+  private drawGroups(groups: readonly GroupBox[]): void {
+    this.groupsLayer.destroyChildren();
+    this.zoneTitles.destroyChildren();
+    for (const g of groups) this.groupsLayer.add(this.drawGroup(g));
+  }
+
+  /**
+   * A zone: its box, a name label that opens the module (a TableGroup as a saved view, a proposed
+   * module in the panel), and a large title shown instead when zoomed far out.
+   */
   private drawGroup(g: GroupBox): Konva.Group {
     const z = zoneStyle(g.group, this.palette);
     const node = new Konva.Group({ x: g.x, y: g.y, name: "group" });
+    const n = g.group.tables.length;
+    const label = new Konva.Text({
+      x: 12, y: 0, height: GROUP_LABEL_H, verticalAlign: "middle", text: `${g.group.name} · ${n} ${n === 1 ? "table" : "tables"}`,
+      fontFamily: FONT_FAMILY, fontSize: 12, fontStyle: "600", fill: z.label, name: "zone-label",
+    });
+    label.on("mouseenter", () => this.setCursor("pointer"));
+    label.on("mouseleave", () => this.setCursor(""));
+    label.on("click tap", (e) => {
+      if (!isPrimary(e.evt)) return;
+      e.cancelBubble = true;
+      this.openZone(g.group);
+    });
+    // Outlined in the background colour so it reads over the tables.
+    const title = new Konva.Text({
+      x: g.x, y: g.y + GROUP_LABEL_H, width: g.w, height: Math.max(1, g.h - GROUP_LABEL_H), align: "center", verticalAlign: "middle",
+      text: g.group.name, fontFamily: FONT_FAMILY, fontStyle: "700", fill: z.label, stroke: this.palette.background, fillAfterStrokeEnabled: true,
+      visible: false, listening: false, name: "zone-title",
+    });
+    // Largest size at which the name still fits the zone.
+    title.setAttr("fitSize", Math.max(12, Math.floor(Math.min(g.w / (g.group.name.length * 0.62), (g.h - GROUP_LABEL_H) / 1.4))));
     node.add(
-      new Konva.Rect({ width: g.w, height: g.h, fill: z.fill, stroke: z.stroke, strokeWidth: z.strokeWidth, cornerRadius: 10, dash: z.dash ?? undefined }),
-      new Konva.Text({
-        x: 12, y: 0, height: GROUP_LABEL_H, verticalAlign: "middle", text: g.group.name,
-        fontFamily: FONT_FAMILY, fontSize: 12, fontStyle: "600", fill: z.label,
-      }),
+      new Konva.Rect({ width: g.w, height: g.h, fill: z.fill, stroke: z.stroke, strokeWidth: z.strokeWidth, cornerRadius: 10, dash: z.dash ?? undefined, listening: false }),
+      label,
     );
+    node.setAttr("title", title);
+    this.zoneTitles.add(title);
     return node;
+  }
+
+  private openZone(g: VGroup): void {
+    if (g.role === "proposed") this.modules.showModule(g.id.slice("module:".length), g.tables, true);
+    else if (g.role) this.fitTo(g.tables);
+    else void this.modules.openModuleView(g);
+  }
+
+  /** Zone names grow with the zoom-out so they stay readable; far out a large title replaces them. */
+  private updateZoneLabels(level: DetailMode, s: number): void {
+    const far = level === "far";
+    const size = Math.min(ZONE_LABEL_MAX, Math.max(12, Math.round(ZONE_LABEL_PX / s)));
+    const titleSize = Math.round(ZONE_TITLE_PX / s);
+    for (const node of this.groupsLayer.getChildren()) {
+      const label = (node as Konva.Group).findOne<Konva.Text>(".zone-label");
+      const title = (node as Konva.Group).getAttr("title") as Konva.Text | undefined;
+      if (!label || !title) continue;
+      label.visible(!far);
+      title.visible(far);
+      if (!far && label.fontSize() !== size) {
+        label.fontSize(size);
+        label.height(Math.max(GROUP_LABEL_H, size * 1.4));
+      }
+      if (far) {
+        const fit = Math.min(titleSize, title.getAttr("fitSize") as number);
+        if (title.fontSize() !== fit) {
+          title.fontSize(fit);
+          title.strokeWidth(fit * 0.18);
+        }
+      }
+    }
   }
 
   private drawEdge(e: EdgeRoute, sig: string): EdgeView {
@@ -1290,8 +1354,7 @@ export class DiagramComponent implements DiagramHandle {
         if (b) live[t] = { x: b.x, y: b.y };
       }
       scene.groups = buildScene(view, live, this.store.hidden(), { detail: this.store.detail(), groups: this.modules.zones() }).groups;
-      this.groupsLayer.destroyChildren();
-      for (const g of scene.groups) this.groupsLayer.add(this.drawGroup(g));
+      this.drawGroups(scene.groups);
     }
     this.updateVisibility();
     this.applyHighlight();
@@ -1865,6 +1928,11 @@ const DETAIL_SCALE = 0.45;
 const TITLE_SCALE = 0.22;
 /** On-screen size (px) of the table names drawn at mid zoom. */
 const MID_LABEL_PX = 12;
+/** On-screen size (px) of zone names, up to a size that still fits above the tables (diagram units). */
+const ZONE_LABEL_PX = 11;
+const ZONE_LABEL_MAX = 34;
+/** On-screen size (px) of the large zone titles shown when zoomed far out. */
+const ZONE_TITLE_PX = 22;
 /** Nodes this close to the viewport (screen pixels) are drawn too, so panning shows no gaps. */
 const CULL_MARGIN = 200;
 

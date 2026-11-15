@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from "@angular/core";
 
-import { displayTable, relatedTables } from "../diagram/view-model";
+import { type VGroup, displayTable, relatedTables } from "../diagram/view-model";
 import { MODULE_COLORS, RESOLUTIONS } from "../modules/find-modules";
 import type { ProposedModule } from "../modules/types";
 import { ModulesStore } from "../state/modules.store";
@@ -8,6 +8,8 @@ import { WorkspaceStore } from "../state/workspace.store";
 
 interface Row {
   key: string;
+  /** Set for a DBML TableGroup (accepted modules). */
+  group: VGroup | null;
   name: string;
   color: string | null;
   tables: string[];
@@ -88,6 +90,10 @@ interface Row {
                 <span class="badge">{{ r.badge }}</span>
               }
             </button>
+            @if (r.group) {
+              <button type="button" class="view" (click)="modules.openModuleView(r.group)"
+                [title]="hasView(r.name) ? 'Show the saved view ' + r.name : 'Save a view with these tables and the common tables they link to'">View</button>
+            }
           </div>
           @if (colorFor() === r.key) {
             <div class="colors">
@@ -209,6 +215,9 @@ interface Row {
     .add { margin: 4px 6px; width: calc(100% - 12px); box-sizing: border-box; font: inherit; font-size: 12px; color: var(--text);
       background: var(--input-bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 7px; }
     .move { font-size: 12px; padding: 3px 6px; color: var(--text); }
+    .view { flex: none; font: inherit; font-size: 11.5px; border: 1px solid var(--border); background: var(--panel); color: var(--text);
+      border-radius: 6px; padding: 1px 7px; cursor: pointer; }
+    .view:hover { background: var(--accent-soft); border-color: var(--accent); }
   `,
 })
 export class ModulesPanelComponent {
@@ -238,6 +247,7 @@ export class ModulesPanelComponent {
         color: m.color,
         tables: m.tables,
         module: m,
+        group: null,
         badge: m.existing ? (m.added ? `+${m.added}` : "kept") : m.satelliteOf ? `${this.short(m.satelliteOf)}'s` : null,
         title: m.existing
           ? `Existing group${m.added ? `, ${m.added} tables join it` : ""}. Click to show it.`
@@ -246,7 +256,7 @@ export class ModulesPanelComponent {
             : `Central table: ${this.short(m.central)}. Click to show the module.`,
       }));
     }
-    return this.store.view().groups.map((g) => ({ key: g.id, name: g.name, color: g.color, tables: g.tables, module: null, badge: null, title: "Click to show it" }));
+    return this.store.view().groups.map((g) => ({ key: g.id, name: g.name, color: g.color, tables: g.tables, module: null, group: g, badge: null, title: "Click to show it" }));
   });
 
   protected readonly commonRows = computed(() => {
@@ -321,6 +331,10 @@ export class ModulesPanelComponent {
       return;
     }
     void this.modules.toggleCommon(id);
+  }
+
+  protected hasView(name: string): boolean {
+    return this.store.view().views.some((v) => v.name === name);
   }
 
   protected acceptTitle(modules: number, removed: number): string {
