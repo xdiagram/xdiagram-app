@@ -93,4 +93,17 @@ describe("geometry", () => {
     const e = buildScene(single, positions, new Set()).edges[0];
     expect(e.points[4]).toBeCloseTo((e.points[2] + e.points[8]) / 2);
   });
+
+  it("draws the zones it is given instead of the DBML groups, around their visible tables", () => {
+    const grouped: ViewModel = { ...view, groups: [{ id: "public.g", name: "g", color: null, tables: ["public.a"] }] };
+    expect(buildScene(grouped, positions, new Set()).groups.map((g) => g.group.name)).toEqual(["g"]);
+    const zones = [
+      { id: "module:x", name: "x", color: "#E67E22", tables: ["public.a", "public.b"], role: "proposed" as const },
+      { id: "module:common", name: "Common tables", color: null, tables: ["public.users"], role: "common" as const },
+    ];
+    const scene = buildScene(grouped, positions, new Set(["public.users"]), { groups: zones });
+    // The common zone has no visible table left.
+    expect(scene.groups.map((g) => g.group.name)).toEqual(["x"]);
+    expect(scene.groups[0].y).toBeLessThan(0);
+  });
 });

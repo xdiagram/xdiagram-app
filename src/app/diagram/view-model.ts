@@ -102,6 +102,11 @@ export interface VGroup {
   name: string;
   color: string | null;
   tables: string[];
+  /**
+   * Zones the Modules arrangement draws that are not DBML TableGroups: a module not accepted yet,
+   * the common tables, the other tables. Absent on TableGroups.
+   */
+  role?: "proposed" | "common" | "other";
 }
 
 export interface ViewModel {

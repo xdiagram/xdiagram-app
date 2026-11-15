@@ -220,6 +220,8 @@ export interface SceneOptions {
   /** X-ray's discovered relationships, routed exactly like declared ones. */
   extra?: VRef[];
   detail?: DetailLevel;
+  /** Zones to draw instead of the DBML TableGroups (the Modules arrangement). */
+  groups?: readonly VGroup[] | null;
 }
 
 export function buildScene(
@@ -244,7 +246,7 @@ export function buildScene(
   const edges = routeAll(refs, tables);
 
   const groups: GroupBox[] = [];
-  for (const g of view.groups) {
+  for (const g of options.groups ?? view.groups) {
     const boxes = g.tables.map((id) => tables.get(id)).filter((b): b is TableBox => !!b);
     if (boxes.length === 0) continue;
     const r = boundsOf(boxes);

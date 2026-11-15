@@ -22,6 +22,7 @@ import { QueryStore } from "../state/query.store";
 import { ThemeService } from "../core/theme.service";
 import { profileSummary } from "../data/profile-format";
 import { WorkloadStore } from "../state/workload.store";
+import { ModulesStore } from "../state/modules.store";
 import { DiagramHandle, WorkspaceStore } from "../state/workspace.store";
 import { CanvasMenuAction, CanvasMenuComponent, CanvasMenuState } from "./context-menu.component";
 import { MinimapComponent } from "./minimap.component";
@@ -36,6 +37,7 @@ import {
   type Rect,
   Scene,
   TableBox,
+  boundsOf,
   buildScene,
   DetailLevel,
   edgeStrokeWidth,
@@ -49,7 +51,7 @@ import {
   TYPE_FONT,
 } from "./geometry";
 import { sceneToSvg } from "./svg-export";
-import { DiagramPalette, FONT_FAMILY, LIGHT, MONO_FAMILY, currentPalette } from "./theme";
+import { DiagramPalette, FONT_FAMILY, LIGHT, MONO_FAMILY, currentPalette, zoneStyle } from "./theme";
 import { displayTable, relatedTables, type VField, type VRef, type VTable, type ViewModel } from "./view-model";
 
 interface Tooltip {
@@ -323,6 +325,7 @@ const RATE_SLOT_W = 118;
 export class DiagramComponent implements DiagramHandle {
   protected readonly store = inject(WorkspaceStore);
   protected readonly workload = inject(WorkloadStore);
+  private readonly modules = inject(ModulesStore);
   private readonly lint = inject(LintStore);
   private readonly query = inject(QueryStore);
   private readonly theme = inject(ThemeService);
@@ -409,6 +412,7 @@ export class DiagramComponent implements DiagramHandle {
       const extra = this.workload.discovered();
       const detail = this.store.detail();
       this.store.focusMode();
+      this.modules.zones();
       // While new tables are being placed, wait for their positions instead of drawing them at 0,0.
       if (this.store.layingOut()) return;
       if (this.stage) untracked(() => this.render(view, positions, hidden, extra, detail));
@@ -552,7 +556,7 @@ export class DiagramComponent implements DiagramHandle {
     detail: DetailLevel,
   ): void {
     if (!this.stage) return;
-    this.scene = buildScene(view, positions, hidden, { extra, detail });
+    this.scene = buildScene(view, positions, hidden, { extra, detail, groups: this.modules.zones() });
     this.sceneSig.set(this.scene);
     this.paletteSig.set(this.palette);
     this.sceneVersion.update((v) => v + 1);
@@ -723,14 +727,13 @@ export class DiagramComponent implements DiagramHandle {
   }
 
   private drawGroup(g: GroupBox): Konva.Group {
-    const p = this.palette;
-    const color = g.group.color ?? p.groupBorder;
+    const z = zoneStyle(g.group, this.palette);
     const node = new Konva.Group({ x: g.x, y: g.y, name: "group" });
     node.add(
-      new Konva.Rect({ width: g.w, height: g.h, fill: p.groupFill, stroke: color, strokeWidth: 1, cornerRadius: 10, dash: [6, 4] }),
+      new Konva.Rect({ width: g.w, height: g.h, fill: z.fill, stroke: z.stroke, strokeWidth: z.strokeWidth, cornerRadius: 10, dash: z.dash ?? undefined }),
       new Konva.Text({
         x: 12, y: 0, height: GROUP_LABEL_H, verticalAlign: "middle", text: g.group.name,
-        fontFamily: FONT_FAMILY, fontSize: 12, fontStyle: "600", fill: g.group.color ?? p.groupLabel,
+        fontFamily: FONT_FAMILY, fontSize: 12, fontStyle: "600", fill: z.label,
       }),
     );
     return node;
@@ -1286,7 +1289,7 @@ export class DiagramComponent implements DiagramHandle {
         const b = scene.tables.get(t);
         if (b) live[t] = { x: b.x, y: b.y };
       }
-      scene.groups = buildScene(view, live, this.store.hidden(), { detail: this.store.detail() }).groups;
+      scene.groups = buildScene(view, live, this.store.hidden(), { detail: this.store.detail(), groups: this.modules.zones() }).groups;
       this.groupsLayer.destroyChildren();
       for (const g of scene.groups) this.groupsLayer.add(this.drawGroup(g));
     }
@@ -1704,6 +1707,18 @@ export class DiagramComponent implements DiagramHandle {
     this.selection.clear();
     this.applyHighlight();
     return true;
+  }
+
+  fitTo(ids: readonly string[]): void {
+    const stage = this.stage;
+    const boxes = ids.map((id) => this.scene?.tables.get(id)).filter((b): b is TableBox => !!b);
+    if (!stage || boxes.length === 0) return;
+    const b = boundsOf(boxes);
+    const pad = 64;
+    const scale = Math.min(1, Math.max(MIN_SCALE, Math.min((stage.width() - pad * 2) / b.w, (stage.height() - pad * 2) / b.h)));
+    stage.scale({ x: scale, y: scale });
+    stage.position({ x: (stage.width() - b.w * scale) / 2 - b.x * scale, y: (stage.height() - b.h * scale) / 2 - b.y * scale });
+    this.onViewportChanged();
   }
 
   currentViewport(): Viewport | null {

@@ -98,6 +98,8 @@ export interface DiagramHandle {
   clearSelection(): boolean;
   /** The viewport now (the one saved through `setViewport` lags behind by a moment). */
   currentViewport(): Viewport | null;
+  /** Zooms to fit these tables. */
+  fitTo(ids: readonly string[]): void;
 }
 
 /** Implemented by the DBML editor; lets the canvas and shortcuts use its undo history. */
@@ -237,6 +239,11 @@ export class WorkspaceStore {
   /** Writes the debounced saves (database tabs' DBML, layouts) now: before closing or restarting. */
   async flushPending(): Promise<void> {
     await Promise.all([this.drafts.flush(), this.layouts.flush(), this.filterMemory.flush()]);
+  }
+
+  /** Identity of the open document (database or file) its layout is kept under. */
+  documentKey(): string | null {
+    return this.layoutKey;
   }
 
   /** The open database's identity (layouts, drafts and remembered filters are kept by it). */
@@ -743,10 +750,10 @@ export class WorkspaceStore {
 
   /**
    * Replaces what Find modules keeps for this document. With `positions`, they become the
-   * Modules arrangement and it is shown; earlier undo steps taken in it are dropped. `null`
-   * discards the Modules arrangement and goes back to the user's layout.
+   * Modules arrangement, shown unless `show` is false; earlier undo steps taken in it are
+   * dropped. `null` discards the Modules arrangement and goes back to the user's layout.
    */
-  setModules(doc: ModulesDoc | null, positions?: Record<string, Point>): void {
+  setModules(doc: ModulesDoc | null, positions?: Record<string, Point>, show = true): void {
     if (!doc) {
       if (this.arrangement() === "modules") this.setArrangement("mine");
       this.parked = null;
@@ -767,7 +774,7 @@ export class WorkspaceStore {
         this.documentVersion.update((v) => v + 1);
       } else {
         this.parked = { positions, viewport: null };
-        this.setArrangement("modules");
+        if (show) this.setArrangement("modules");
       }
     }
     this.persist();
@@ -922,7 +929,8 @@ export class WorkspaceStore {
    * Runs a task with a busy label; errors are shown in the error banner. The task gets an
    * operation id to pass to cancellable commands (`cancelBusy` stops them). Resolves to success.
    */
-  private async run(label: string, task: (op: string) => Promise<void>): Promise<boolean> {
+  /** Runs a task behind the busy spinner (cancellable with `op`); errors go to the banner. */
+  async run(label: string, task: (op: string) => Promise<void>): Promise<boolean> {
     const op = crypto.randomUUID();
     this.busy.set(label);
     this.busyOp.set(op);

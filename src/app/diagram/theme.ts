@@ -1,3 +1,5 @@
+import type { VGroup } from "./view-model";
+
 /** Diagram colours. The canvas follows the OS theme; exports always use the light palette. */
 export interface DiagramPalette {
   background: string;
@@ -104,3 +106,32 @@ export function currentPalette(): DiagramPalette {
 
 export const FONT_FAMILY = "Inter, 'Segoe UI', system-ui, -apple-system, sans-serif";
 export const MONO_FAMILY = "'JetBrains Mono', 'Cascadia Code', Consolas, monospace";
+
+export interface ZoneStyle {
+  fill: string;
+  stroke: string;
+  strokeWidth: number;
+  dash: number[] | null;
+  label: string;
+}
+
+/**
+ * How a zone is drawn: a TableGroup dashed in its colour; a module not accepted yet tinted with
+ * a solid border; the common and other tables of the Modules arrangement in neutral grey.
+ */
+export function zoneStyle(g: VGroup, p: DiagramPalette): ZoneStyle {
+  if (g.role === "common" || g.role === "other") {
+    return { fill: "rgba(127, 127, 127, 0.04)", stroke: p.tableBorder, strokeWidth: 1, dash: [2, 4], label: p.fieldType };
+  }
+  if (g.role === "proposed" && g.color) {
+    return { fill: tint(g.color, 0.07), stroke: g.color, strokeWidth: 1.5, dash: null, label: g.color };
+  }
+  return { fill: p.groupFill, stroke: g.color ?? p.groupBorder, strokeWidth: 1, dash: [6, 4], label: g.color ?? p.groupLabel };
+}
+
+/** `#rrggbb` at the given opacity (anything else is returned as it is). */
+function tint(hex: string, alpha: number): string {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) return hex;
+  return `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, ${alpha})`;
+}

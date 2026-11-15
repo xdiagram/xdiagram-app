@@ -43,6 +43,10 @@
           [title]="store.modulesDoc() ? 'The tables arranged by module (your own layout is kept)' : 'Find modules first'">
           <span>Modules</span><span class="check">{{ store.arrangement() === "modules" ? "✓" : "" }}</span>
         </button>
+        <button type="button" role="menuitem" (click)="viewsOpen.set(false); findModules()"
+          title="Group the tables by how they work together, in a layout of their own">
+          <span>Find modules…</span>
+        </button>
         <div class="menu-sep"></div>
         <div class="menu-label">Tables</div>
         <button type="button" role="menuitemradio" [attr.aria-checked]="!store.activeView()"
@@ -196,6 +200,13 @@
             <i class="dot" aria-label="on"></i>
           }
         </button>
+        <button type="button" role="tab" [attr.aria-selected]="sidebarTab() === 'modules'"
+          [class.active]="sidebarTab() === 'modules'" (click)="sidebarTab.set('modules')">
+          Modules
+          @if (modules.proposal()) {
+            <i class="dot" aria-label="proposal not saved yet"></i>
+          }
+        </button>
         <button type="button" role="tab" [attr.aria-selected]="sidebarTab() === 'lint'"
           [class.active]="sidebarTab() === 'lint'" (click)="sidebarTab.set('lint')">
           Lint
@@ -209,6 +220,8 @@
         <app-table-list />
       } @else if (sidebarTab() === "lint") {
         <app-lint-panel />
+      } @else if (sidebarTab() === "modules") {
+        <app-modules-panel />
       } @else {
         <app-workload-panel />
       }

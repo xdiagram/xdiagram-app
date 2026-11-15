@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from "@angular/core";
+import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from "@angular/core";
 
 import { ConnectionDialogComponent } from "./connect/connection-dialog.component";
 import { loadDbmlCore } from "./core/dbml";
@@ -28,18 +28,20 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { ThemeService } from "./core/theme.service";
 import { CommandPaletteComponent, PaletteItem } from "./palette/command-palette.component";
 import { LintPanelComponent } from "./sidebar/lint-panel.component";
+import { ModulesPanelComponent } from "./sidebar/modules-panel.component";
 import { TableListComponent } from "./sidebar/table-list.component";
 import { LintStore } from "./state/lint.store";
 import { QueryStore } from "./state/query.store";
 import { WorkloadPanelComponent } from "./sidebar/workload-panel.component";
 import { BrowserStore } from "./state/browser.store";
 import { WorkloadStore } from "./state/workload.store";
+import { ModulesStore } from "./state/modules.store";
 import { WorkspaceStore } from "./state/workspace.store";
 
 const EDITOR_WIDTH_KEY = "xdiagram.editorWidth";
 const SIDEBAR_KEY = "xdiagram.sidebar";
 
-type SidebarTab = "tables" | "xray" | "lint";
+type SidebarTab = "tables" | "xray" | "lint" | "modules";
 
 function readPref(key: string): string | null {
   try {
@@ -76,6 +78,7 @@ function writePref(key: string, value: string): void {
     DataDrawerComponent,
     ImportDialogComponent,
     LintPanelComponent,
+    ModulesPanelComponent,
     SampleDataDialogComponent,
     SettingsDialogComponent,
     AboutDialogComponent,
@@ -91,6 +94,7 @@ function writePref(key: string, value: string): void {
 export class AppComponent {
   protected readonly store = inject(WorkspaceStore);
   protected readonly workload = inject(WorkloadStore);
+  protected readonly modules = inject(ModulesStore);
   private readonly docs = inject(DocsService);
   protected readonly ddl = inject(DdlService);
   protected readonly lint = inject(LintStore);
@@ -154,6 +158,9 @@ export class AppComponent {
     const modules = !!this.store.modulesDoc();
     cmd("layout-mine", "Show my layout", () => this.store.setArrangement("mine"), "Layout", modules && this.store.arrangement() !== "mine");
     cmd("layout-modules", "Show the Modules layout", () => this.store.setArrangement("modules"), "Layout", modules && this.store.arrangement() !== "modules");
+    cmd("modules-find", "Find modules", () => void this.findModules(), "Modules", has);
+    cmd("modules-all", "Recompute all modules (existing groups included)", () => void this.modules.find("all"), "Modules", has);
+    cmd("modules-reject", "Reject the proposed modules", () => this.modules.reject(), "Modules", !!this.modules.proposal());
     cmd("png", "Export PNG image", () => this.export("png"), "Export", has);
     cmd("svg", "Export SVG image", () => this.export("svg"), "Export", has);
     cmd("dbml", "Export DBML file", () => this.export("dbml"), "Ctrl+S", has);
@@ -222,6 +229,14 @@ export class AppComponent {
       document.title = title;
       void getCurrentWindow().setTitle(title).catch(() => undefined);
     });
+    // Finding modules shows their panel.
+    effect(() => {
+      if (!this.modules.revealRequests()) return;
+      untracked(() => {
+        this.sidebarTab.set("modules");
+        this.sidebarOpen.set(true);
+      });
+    });
     // Turning X-ray on, or asking for its advice, brings its panel into view.
     effect(() => {
       this.workload.revealRequests();
@@ -230,6 +245,14 @@ export class AppComponent {
         this.sidebarOpen.set(true);
       }
     });
+  }
+
+  /** Shows the Modules panel; finds the modules the first time. */
+  protected async findModules(): Promise<void> {
+    this.sidebarTab.set("modules");
+    this.sidebarOpen.set(true);
+    if (!this.store.modulesDoc()) await this.modules.find();
+    else if (this.store.arrangement() !== "modules") this.store.setArrangement("modules");
   }
 
   protected checkForUpdates(): void {

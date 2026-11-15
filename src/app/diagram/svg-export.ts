@@ -9,7 +9,7 @@ import {
   markerSegments,
   sceneBounds,
 } from "./geometry";
-import { DiagramPalette, FONT_FAMILY, MONO_FAMILY } from "./theme";
+import { DiagramPalette, FONT_FAMILY, MONO_FAMILY, zoneStyle } from "./theme";
 
 const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -39,11 +39,12 @@ export function sceneToSvg(scene: Scene, p: DiagramPalette, title: string, optio
   );
 
   for (const g of scene.groups) {
-    const color = g.group.color ?? p.groupBorder;
+    const z = zoneStyle(g.group, p);
+    const dash = z.dash ? ` stroke-dasharray="${z.dash.join(" ")}"` : "";
     out.push(
       `<g transform="translate(${n(g.x)},${n(g.y)})">`,
-      `<rect width="${n(g.w)}" height="${n(g.h)}" rx="10" fill="${p.groupFill}" stroke="${esc(color)}" stroke-dasharray="6 4"/>`,
-      `<text x="12" y="${GROUP_LABEL_H / 2}" font-size="12" font-weight="600" fill="${esc(g.group.color ?? p.groupLabel)}">${esc(g.group.name)}</text>`,
+      `<rect width="${n(g.w)}" height="${n(g.h)}" rx="10" fill="${esc(z.fill)}" stroke="${esc(z.stroke)}" stroke-width="${z.strokeWidth}"${dash}/>`,
+      `<text x="12" y="${GROUP_LABEL_H / 2}" font-size="12" font-weight="600" fill="${esc(z.label)}">${esc(g.group.name)}</text>`,
       `</g>`,
     );
   }
