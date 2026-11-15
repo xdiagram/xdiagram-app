@@ -47,6 +47,9 @@ every change made on the canvas is an edit to it.
   - **Find modules**: groups the tables by how they work together (X-ray's join traffic on
     PostgreSQL, else the declared relationships), in a layout of its own next to yours. Accepted
     modules become coloured `TableGroup`s, and a click on one opens it as a saved view (see below).
+  - **Join paths**: select two tables (click, Shift+click) and **Show join path**, or type
+    `path orders → users` in the palette: the best ways to join them, highlighted with the rest
+    dimmed, and **Copy as SQL** (see below).
   - Parallel edge lanes so relationships sharing a side don't overlap.
   - Hundreds of tables stay smooth: parsing, completion and layout run off the main thread, and
     the canvas draws only what is on screen, in less detail when zoomed out (see below).
@@ -486,6 +489,60 @@ foreign keys were planted in.
 Code: `src/app/modules/` (graph, common tables, Louvain, modules, packing and TableGroup text, all
 pure and unit-tested), `src/app/state/modules.store.ts`, `src/app/state/arrangements.ts` and
 `src/app/sidebar/modules-panel.component.ts`.
+
+## Join paths
+
+"How do I get from `invoice_lines` to `users`?" Select the two tables (click the first, Shift+click
+the second), right-click, **Show join path**. Or right-click one table, **Find join path to…**, and
+type the other; or type `path invoice_lines → users` (`->` and `>` work too) in the palette.
+
+- **Up to 3 routes, at most 6 joins each**, best first. The route shown is lit and the rest of the
+  diagram is dimmed. ◀ ▶ (or ← →) go through the others, ⇄ swaps the ends, Esc or ✕ leaves.
+- **The bar under it lists each join**: its cardinality in the walking direction (`N:1`, `1:N`) and
+  its columns. When two tables are linked by several foreign keys (`created_by`, `updated_by`), they
+  are one step with a choice of relationship, not separate routes, so they cannot hide a really
+  different route. ⊘ on a table in the middle searches again without it.
+- **Joins seen in the queries** (X-ray, PostgreSQL) count too, marked "from queries" with their
+  calls; **Joins from queries** turns them off. Without X-ray the declared relationships are used,
+  on every engine and on `.dbml` files. Nothing is read from the database for this: only a traffic
+  report already loaded (X-ray's, or Find modules') is used.
+- **No route:** the bar says why. The tables are not connected, or only through the tables you
+  avoid, or the shortest route needs more than 6 joins.
+- **Hidden tables** are searched too; when a route goes through one, the bar offers to show it.
+- **Copy as SQL** copies the skeleton, never runs it:
+
+  ```sql
+  SELECT "il".*, "u".*
+  FROM "billing"."invoice_lines" AS "il"
+  JOIN "billing"."invoices" AS "i" ON "i"."id" = "il"."invoice_id"
+  JOIN "organizations" AS "o" ON "o"."id" = "i"."org_id"
+  JOIN "memberships" AS "m" ON "m"."org_id" = "o"."id"
+  JOIN "users" AS "u" ON "u"."id" = "m"."user_id"
+  ```
+
+  Identifiers are quoted for the database's engine (a file: its import dialect, else PostgreSQL's),
+  with the relationship chosen for each step. A join that only the queries show gets a comment.
+
+How routes are ranked (cost, lowest first):
+
+- A declared foreign key costs 0.8–1.0, less when the queries use it often. A join seen only in the
+  queries costs 1.2–2.4, less the more it runs: one busy discovered join beats two declared hops,
+  a rare one does not.
+- A table in the middle of a route with more than 8 neighbours adds 0.5 per doubling (0.5 at 16,
+  1.0 at 32): routes through `users` or `tenants` are valid, but rarely the one meant.
+- Ties go to fewer joins, then to the table names, so the same schema always gives the same answer.
+
+The engine is a separate Rust crate, `src-tauri/crates/join-paths`, with no Tauri or database
+dependency, so other tools can use it. The frontend sends it the graph (tables and relationships
+from the DBML, plus X-ray's joins); it never parses DBML. It runs Yen's k shortest simple paths over
+the links between tables, each shortest path computed layer by layer up to the join limit.
+
+On 1000 tables and 2861 relationships, a search takes about 2 ms in the engine and 24 ms (35 ms at
+worst) through the app's IPC, most of it sending the graph (release build).
+
+Code: `src-tauri/crates/join-paths` (graph, costs, search, SQL; unit-tested, with a timing test run
+by `cargo test -p join-paths --release -- --ignored`), `src/app/paths/` and
+`src/app/state/join-path.store.ts`.
 
 ## Releases and updates
 
