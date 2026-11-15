@@ -1,10 +1,12 @@
 import { Injectable, computed, inject, signal } from "@angular/core";
 
+import { loadDbmlCore } from "../core/dbml";
 import { TauriApi, errorMessage } from "../core/tauri-api.service";
 import { type ModuleLayoutPlan, layoutModules } from "../diagram/layout";
 import type { VGroup, ViewModel } from "../diagram/view-model";
 import { RESOLUTIONS, findModules, isValidModuleName } from "../modules/find-modules";
 import { type TrafficReport, collectLinks } from "../modules/graph";
+import { type GroupTarget, writeModuleGroups } from "../modules/module-text";
 import type { FindMode, GraphSource, Link, ModuleProposal, ModulesDoc } from "../modules/types";
 import type { Point } from "../persistence/layout.service";
 import { WorkloadStore } from "./workload.store";
@@ -66,7 +68,8 @@ export class ModulesStore {
     const grouped = new Set(view.groups.flatMap((g) => g.tables));
     const common = doc.common.filter((t) => !grouped.has(t));
     const commonSet = new Set(common);
-    const other = view.tables.map((t) => t.id).filter((id) => !grouped.has(id) && !commonSet.has(id));
+    // With no group left (an Accept undone), every table would be "other": no zone for that.
+    const other = view.groups.length ? view.tables.map((t) => t.id).filter((id) => !grouped.has(id) && !commonSet.has(id)) : [];
     return [...view.groups, ...this.extraZones(common, other)];
   });
 
@@ -220,6 +223,57 @@ export class ModulesStore {
   /** Finer or coarser modules. */
   async setResolution(resolution: number): Promise<void> {
     await this.find(this.proposal()?.mode, resolution);
+  }
+
+  /**
+   * Writes the proposal into the DBML as TableGroups (one undoable edit): new groups appended,
+   * existing ones updated, renamed or (all mode) removed. The Modules arrangement stays.
+   */
+  async accept(): Promise<void> {
+    const doc = this.doc();
+    const p = doc?.proposal;
+    if (!doc || !p) return;
+    if (this.workspace.diagnostics().length) return this.workspace.flash("Fix the errors in the DBML first");
+    await this.workspace.settle();
+    const view = this.workspace.view();
+    const targets: GroupTarget[] = p.modules.map((m) => ({ existing: m.existing, name: m.name, color: m.color, tables: m.tables }));
+    let text: string;
+    try {
+      text = writeModuleGroups(this.workspace.dbml(), view.groups, targets, p.removedGroups);
+      const { updateElementSetting, SymbolKind } = await loadDbmlCore();
+      for (const t of targets) {
+        const before = view.groups.find((g) => g.id === t.existing);
+        if (before && before.color?.toLowerCase() !== t.color.toLowerCase()) {
+          text = updateElementSetting(text, { kind: SymbolKind.TableGroup, name: t.name } as never, "color", t.color);
+        }
+      }
+    } catch (err) {
+      return this.workspace.error.set(`Could not write the modules into the DBML: ${errorMessage(err)}`);
+    }
+    const problem = await this.check(text, p);
+    if (problem) return this.workspace.error.set(`Could not write the modules into the DBML: ${problem}. Edit the TableGroup blocks in the editor instead.`);
+    this.seq++;
+    this.workspace.applyDbmlEdit(text, "Accept modules");
+    await this.workspace.settle();
+    this.workspace.setModules({ ...doc, proposal: null, common: p.common, previous: null });
+    const removed = p.removedGroups.length ? `, removed ${p.removedGroups.length}` : "";
+    this.workspace.flash(`Wrote ${p.modules.length} TableGroups into the DBML${removed} (Ctrl+Z undoes it)`);
+  }
+
+  /** Why the written text does not hold the proposal (null when it does). */
+  private async check(text: string, p: ModuleProposal): Promise<string | null> {
+    const written = await this.workspace.parseView(text);
+    if (!written) return "the result does not parse";
+    const groupOf = new Map(written.tables.map((t) => [t.id, t.groupId]));
+    for (const m of p.modules) {
+      const bad = m.tables.find((t) => groupOf.get(t) !== `public.${m.name}`);
+      if (bad) return `${bad} is not in the group ${m.name} (is it listed under an alias?)`;
+    }
+    if (p.mode === "all") {
+      const loose = [...p.common, ...p.other].find((t) => groupOf.get(t));
+      if (loose) return `${loose} is still in a group`;
+    }
+    return null;
   }
 
   /** Discards the proposal: back to the accepted modules it replaced, or no Modules arrangement. */

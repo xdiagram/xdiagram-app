@@ -107,6 +107,9 @@ export interface VGroup {
    * the common tables, the other tables. Absent on TableGroups.
    */
   role?: "proposed" | "common" | "other";
+  /** Offsets of the `TableGroup` block in the DBML text (`end`: just after its `}`). */
+  start?: number | null;
+  end?: number | null;
 }
 
 export interface ViewModel {
@@ -207,6 +210,8 @@ export function buildViewModel(db: Database): ViewModel {
         name: group.name,
         color: (group.color as unknown as string) || null,
         tables: group.tables.map(tableId),
+        start: tokenStart(group),
+        end: tokenEnd(group),
       });
     }
   }

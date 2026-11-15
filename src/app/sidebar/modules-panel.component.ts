@@ -49,6 +49,8 @@ interface Row {
           </div>
           <div class="buttons">
             <button type="button" class="ghost" (click)="modules.reject()" title="Discard this proposal">Reject</button>
+            <button type="button" class="primary small" (click)="modules.accept()" [disabled]="busy() || store.diagnostics().length > 0"
+              [title]="store.diagnostics().length ? 'Fix the errors in the DBML first' : acceptTitle(p.modules.length, p.removedGroups.length)">Accept</button>
           </div>
         </div>
         <div class="note" [class.warn]="basis().warn">{{ basis().text }}</div>
@@ -319,6 +321,11 @@ export class ModulesPanelComponent {
       return;
     }
     void this.modules.toggleCommon(id);
+  }
+
+  protected acceptTitle(modules: number, removed: number): string {
+    const rm = removed ? `, removes ${removed}` : "";
+    return `Writes ${modules} TableGroups into the DBML${rm} (one Ctrl+Z undoes it)`;
   }
 
   protected groupName(id: string): string {

@@ -547,6 +547,17 @@ export class WorkspaceStore {
     }
   }
 
+  /** Parses now if the text changed since the last parse, so `view` matches `dbml` (unless it has errors). */
+  async settle(): Promise<void> {
+    if (this.parseTimer || this.parsedText !== this.dbml()) await this.parseNow();
+  }
+
+  /** The diagram model of a DBML text that is not the open document (null when it does not parse). */
+  async parseView(text: string): Promise<ViewModel | null> {
+    const [view] = await this.parser.views([text]);
+    return view;
+  }
+
   /**
    * The full `@dbml/core` model behind the diagram (documentation, sample data), parsed here on
    * first use; null when nothing has parsed yet.

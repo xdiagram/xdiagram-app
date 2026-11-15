@@ -160,6 +160,7 @@ export class AppComponent {
     cmd("layout-modules", "Show the Modules layout", () => this.store.setArrangement("modules"), "Layout", modules && this.store.arrangement() !== "modules");
     cmd("modules-find", "Find modules", () => void this.findModules(), "Modules", has);
     cmd("modules-all", "Recompute all modules (existing groups included)", () => void this.modules.find("all"), "Modules", has);
+    cmd("modules-accept", "Accept the proposed modules (write TableGroups)", () => void this.modules.accept(), "Modules", !!this.modules.proposal());
     cmd("modules-reject", "Reject the proposed modules", () => this.modules.reject(), "Modules", !!this.modules.proposal());
     cmd("png", "Export PNG image", () => this.export("png"), "Export", has);
     cmd("svg", "Export SVG image", () => this.export("svg"), "Export", has);

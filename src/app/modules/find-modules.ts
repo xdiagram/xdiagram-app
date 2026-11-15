@@ -122,7 +122,7 @@ export function findModules(input: FindInput): ModuleProposal {
     const isGroup = slot.startsWith("g:");
     const group = isGroup ? groups[Number(slot.slice(2))] : null;
     const satelliteOf = slot.startsWith("s:") ? slot.slice(2) : null;
-    const central = satelliteOf ?? centralTable(tables, inner);
+    const central = satelliteOf ?? centralTable(tables, inner, degree);
     drafts.push({
       key: group ? group.id : `${satelliteOf ? "s" : "m"}:${central}`,
       name: group?.name ?? "",
@@ -254,13 +254,21 @@ function innerStrength(links: readonly Link[], slotOf: ReadonlyMap<string, strin
   return m;
 }
 
-/** The member with the highest weighted degree inside the module (then most neighbours, then id). */
-function centralTable(tables: readonly string[], inner: ReadonlyMap<string, { w: number; n: number }>): string {
+/**
+ * The member with the highest weighted degree inside the module; ties go to the one with more
+ * links overall (in a pair, the parent referenced from elsewhere too), then to the id.
+ */
+function centralTable(tables: readonly string[], inner: ReadonlyMap<string, { w: number; n: number }>, degree: ReadonlyMap<string, number>): string {
+  const key = (t: string) => {
+    const i = inner.get(t) ?? { w: 0, n: 0 };
+    return [i.w, degree.get(t) ?? 0, i.n];
+  };
   let best = tables[0];
   for (const t of tables) {
-    const a = inner.get(t) ?? { w: 0, n: 0 };
-    const b = inner.get(best) ?? { w: 0, n: 0 };
-    if (a.w > b.w + 1e-9 || (Math.abs(a.w - b.w) <= 1e-9 && (a.n > b.n || (a.n === b.n && t < best)))) best = t;
+    const [aw, ad, an] = key(t);
+    const [bw, bd, bn] = key(best);
+    const better = aw > bw + 1e-9 || (Math.abs(aw - bw) <= 1e-9 && (ad > bd || (ad === bd && (an > bn || (an === bn && t < best)))));
+    if (better) best = t;
   }
   return best;
 }
