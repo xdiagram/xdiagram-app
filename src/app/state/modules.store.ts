@@ -39,7 +39,13 @@ export class ModulesStore {
   readonly revealRequests = signal(0);
   readonly source = signal<ModulesSource | null>(null);
   /** X-ray's report fetched for Find modules while X-ray was off, for one document. */
-  private traffic: { key: string | null; report: TrafficReport | null; note: string | null } | null = null;
+  private readonly traffic = signal<{ key: string | null; report: TrafficReport | null; note: string | null } | null>(null);
+
+  /** The traffic report Find modules read for the open document, if any (reused, never re-read). */
+  readonly loadedTraffic = computed(() => {
+    const t = this.traffic();
+    return t && t.key === this.workspace.documentKey() ? t.report : null;
+  });
   private seq = 0;
 
   readonly doc = computed(() => this.workspace.modulesDoc());
@@ -127,7 +133,7 @@ export class ModulesStore {
           previous: prev && !prev.proposal ? { positions: this.workspace.modulesPositions() ?? {}, common: prev.common } : (prev?.previous ?? null),
           resolution,
         };
-        this.source.set({ kind: source, note: this.traffic?.note ?? null, joins: links.reduce((s, l) => s + l.calls, 0) });
+        this.source.set({ kind: source, note: this.traffic()?.note ?? null, joins: links.reduce((s, l) => s + l.calls, 0) });
         this.workspace.setModules(doc, positions);
         this.revealRequests.update((n) => n + 1);
       });
@@ -147,19 +153,21 @@ export class ModulesStore {
     const key = this.workspace.documentKey();
     const src = this.workspace.source();
     if (src?.kind !== "db" || src.engine !== "postgres") {
-      this.traffic = { key, report: null, note: null };
+      this.traffic.set({ key, report: null, note: null });
       return null;
     }
-    if (this.traffic?.key === key && this.traffic.report) return this.traffic.report;
+    const cached = this.traffic();
+    if (cached?.key === key && cached.report) return cached.report;
     const conn = await this.workspace.currentConnection();
     if (!conn) return null;
     try {
       const report = await this.api.analyzeWorkload(conn.input, conn.schemas, op);
-      this.traffic = { key, report: report.available ? report : null, note: report.available ? null : report.reason };
-      return this.traffic.report;
+      const read = { key, report: report.available ? report : null, note: report.available ? null : report.reason };
+      this.traffic.set(read);
+      return read.report;
     } catch (err) {
       if (errorMessage(err) === "Cancelled") throw err;
-      this.traffic = { key, report: null, note: errorMessage(err) };
+      this.traffic.set({ key, report: null, note: errorMessage(err) });
       return null;
     }
   }
@@ -172,7 +180,7 @@ export class ModulesStore {
     const { links } = collectLinks(
       view.tables.map((t) => t.id),
       view.refs,
-      this.traffic?.report ?? this.workload.report(),
+      this.traffic()?.report ?? this.workload.report(),
     );
     if (doc.proposal) return layoutModules(view, planOf(doc.proposal, links));
     return layoutModules(view, acceptedPlan(view, doc, links));
