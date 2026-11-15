@@ -60,6 +60,29 @@ pub async fn profile_table(
     ops::cancellable(op_id, dispatch::profile_table(&input, request)).await
 }
 
+/// Join paths: the best routes between two tables of the graph the frontend sends (declared
+/// relationships plus X-ray's joins). Pure computation, no connection.
+#[tauri::command]
+pub async fn find_join_paths(
+    graph: join_paths::SchemaGraph,
+    from: String,
+    to: String,
+    opts: Option<join_paths::PathOpts>,
+) -> join_paths::PathOutcome {
+    join_paths::find_join_paths(&graph, &from, &to, &opts.unwrap_or_default())
+}
+
+/// The SELECT skeleton of a join path in a dialect's quoting (text only, never run).
+#[tauri::command]
+pub async fn join_path_sql(
+    path: join_paths::JoinPath,
+    tables: Vec<join_paths::TableNode>,
+    dialect: join_paths::Dialect,
+    variant: Option<Vec<usize>>,
+) -> String {
+    join_paths::path_sql(&path, &tables, dialect, &variant.unwrap_or_default())
+}
+
 /// Schema JSON of a SQLite DDL script, built in a private in-memory database.
 #[tauri::command]
 pub async fn import_sqlite_ddl(sql: String) -> Result<db::sqlite::DdlImport, AppError> {

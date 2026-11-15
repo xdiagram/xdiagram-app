@@ -62,6 +62,82 @@ export interface SaveFileRequest {
   base64: boolean;
 }
 
+// ---- Join paths (src-tauri/crates/join-paths) ----
+
+export interface TableNode {
+  id: string;
+  schema: string;
+  name: string;
+}
+
+export type EdgeKind = "declared" | "discovered";
+export type Multiplicity = "one" | "many" | "unknown";
+
+/** `from` is a column of the edge's (or step's left) table, `to` of the other one. */
+export interface ColumnPair {
+  from: string;
+  to: string;
+}
+
+/** A relationship: `from` is the referencing (FK) side. A composite key is one edge. */
+export interface SchemaEdge {
+  id: string;
+  from: string;
+  to: string;
+  pairs: ColumnPair[];
+  kind: EdgeKind;
+  fromMult: Multiplicity;
+  toMult: Multiplicity;
+  calls: number;
+}
+
+export interface SchemaGraph {
+  tables: TableNode[];
+  edges: SchemaEdge[];
+}
+
+export interface PathOpts {
+  maxPaths: number;
+  maxHops: number;
+  avoid: string[];
+}
+
+export interface StepVariant {
+  edge: string;
+  /** Walked from the edge's FK side to its referenced side. */
+  forward: boolean;
+  on: ColumnPair[];
+  leftMult: Multiplicity;
+  rightMult: Multiplicity;
+  kind: EdgeKind;
+  calls: number;
+  cost: number;
+}
+
+/** One join; parallel relationships between the two tables are its variants, cheapest first. */
+export interface PathStep {
+  left: string;
+  right: string;
+  variants: StepVariant[];
+}
+
+export interface JoinPath {
+  tables: string[];
+  steps: PathStep[];
+  cost: number;
+  hops: number;
+}
+
+export type NoPathReason = { kind: "notConnected" } | { kind: "onlyThroughAvoided" } | { kind: "tooLong"; hops: number } | { kind: "noSelfReference" };
+
+export type PathOutcome =
+  | { kind: "found"; paths: JoinPath[] }
+  | { kind: "noPath"; reason: NoPathReason }
+  | { kind: "invalid"; error: { kind: "unknownTable" | "endpointAvoided"; table: string } };
+
+/** Identifier quoting of the copied SQL. */
+export type PathDialect = "postgres" | "mysql" | "mssql" | "sqlite";
+
 // ---- X-ray mode (src-tauri/src/db/workload_db.rs, src-tauri/src/live.rs) ----
 
 export interface WorkloadEndpoint {
@@ -548,6 +624,16 @@ export class TauriApi {
 
   listSchemas(input: ConnectionInput): Promise<string[]> {
     return this.db("list_schemas", { input });
+  }
+
+  /** Join paths between two tables of `graph` (src-tauri/crates/join-paths; pure, no connection). */
+  findJoinPaths(graph: SchemaGraph, from: string, to: string, opts?: Partial<PathOpts>): Promise<PathOutcome> {
+    return invoke("find_join_paths", { graph, from, to, opts: opts ?? null });
+  }
+
+  /** The SELECT skeleton of a join path; `variant[i]` picks step i's variant (default the first). */
+  joinPathSql(path: JoinPath, tables: TableNode[], dialect: PathDialect, variant: number[] = []): Promise<string> {
+    return invoke("join_path_sql", { path, tables, dialect, variant });
   }
 
   /** Schema JSON of a SQLite DDL script (its CREATE statements run in a private in-memory database). */
