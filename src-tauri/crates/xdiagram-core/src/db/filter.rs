@@ -19,6 +19,7 @@ pub const MAX_DEPTH: usize = 6;
 /// Longer values would be sent as `nvarchar(max)` on SQL Server, which cannot use an index.
 pub const MAX_VALUE_CHARS: usize = 4000;
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BoolOp {
@@ -26,6 +27,7 @@ pub enum BoolOp {
     Or,
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Op {
@@ -55,10 +57,14 @@ pub enum Op {
     IsPadded,
 }
 
+/// A filter: groups of conditions. Every node has an `id` the problems found in it refer to
+/// (empty when the caller does not track them).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase")]
 pub enum FilterNode {
     Group {
+        #[serde(default)]
         id: String,
         op: BoolOp,
         #[serde(default)]
@@ -67,6 +73,7 @@ pub enum FilterNode {
         items: Vec<FilterNode>,
     },
     Cond {
+        #[serde(default)]
         id: String,
         column: String,
         op: Op,
@@ -79,6 +86,7 @@ pub enum FilterNode {
     /// The text in any of `columns` (empty: every text-like column): contains for text, equal
     /// for numbers, dates and UUIDs when the text is one.
     Search {
+        #[serde(default)]
         id: String,
         text: String,
         #[serde(default)]
@@ -89,6 +97,7 @@ pub enum FilterNode {
     /// Rows by their related rows in another table (or the same one): has some, has none, or a
     /// number of them, optionally only counting related rows that match `filter`.
     Rel {
+        #[serde(default)]
         id: String,
         schema: String,
         table: String,
@@ -101,10 +110,20 @@ pub enum FilterNode {
     },
     /// One column compared with another of the same row (`ends_on < starts_on`). NULL on either
     /// side matches nothing, as in SQL.
-    Cols { id: String, left: String, op: Op, right: String },
+    Cols {
+        #[serde(default)]
+        id: String,
+        left: String,
+        op: Op,
+        right: String,
+    },
     /// Rows whose values in `columns` occur in more than one row of the whole table (not only
     /// among the filtered rows). A NULL in any of them is not a duplicate.
-    Dup { id: String, columns: Vec<String> },
+    Dup {
+        #[serde(default)]
+        id: String,
+        columns: Vec<String>,
+    },
 }
 
 /// Columns a duplicates condition can take.
@@ -124,6 +143,7 @@ fn comparable(a: ColKind, b: ColKind) -> bool {
 }
 
 /// How many related rows a row must have.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Quant {

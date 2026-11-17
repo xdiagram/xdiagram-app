@@ -217,3 +217,93 @@ fn reads_the_dbml_the_user_keeps_in_the_app() {
     drafts.save(&key, &json!({ "v": 1, "baseline": "Table a { id int }", "dbml": null, "savedAt": "x" }).to_string()).unwrap();
     assert!(c.ok("get_saved_dbml", json!({ "connection": "Sample" })).contains("no edits by the user"));
 }
+
+fn three_levels(db: &str) -> Value {
+    json!([
+        sqlite("m", "Masked", db, json!({ "enabled": true, "data": "masked" })),
+        sqlite("f", "Full", db, json!({ "enabled": true, "data": "full" })),
+        sqlite("s", "SchemaOnly", db, json!({ "enabled": true, "data": "schema" }))
+    ])
+}
+
+#[test]
+fn reads_rows_with_personal_data_masked() {
+    let fx = Fixture::new("rows", three_levels);
+    let mut c = fx.client();
+
+    let page = c.ok_json("browse_rows", json!({ "connection": "Masked", "table": "users", "sort": [{ "column": "id" }] }));
+    let email = page["columns"].as_array().unwrap().iter().position(|n| n == "email").unwrap();
+    assert_eq!(page["rows"][0][email], "[masked: email]");
+    assert_eq!(page["maskedColumns"]["email"], "email");
+    let name = page["columns"].as_array().unwrap().iter().position(|n| n == "full_name").unwrap();
+    assert_eq!(page["rows"][0][name], "[masked: name]", "full_name is a personal-data name");
+    assert_eq!(page["hasMore"], false);
+
+    let full = c.ok_json("browse_rows", json!({ "connection": "Full", "table": "users", "sort": [{ "column": "id" }] }));
+    assert_eq!(full["rows"][0][email], "ann@x.io");
+    assert!(full.get("maskedColumns").is_none());
+
+    let refused = c.err("browse_rows", json!({ "connection": "SchemaOnly", "table": "users" }));
+    assert!(refused.contains("schema only"), "{refused}");
+    assert!(c.err("count_rows", json!({ "connection": "SchemaOnly", "table": "users" })).contains("schema only"));
+
+    // Filtering still works on masked columns (the agent supplies the value).
+    let one = c.ok_json(
+        "browse_rows",
+        json!({ "connection": "Masked", "table": "users", "columns": ["id", "role"], "include_sql": true,
+                "filter": { "t": "group", "op": "and", "items": [{ "t": "cond", "column": "email", "op": "eq", "args": ["bob@x.io"] }] } }),
+    );
+    assert_eq!(one["columns"], json!(["id", "role"]));
+    assert_eq!(one["rows"], json!([["2", "member"]]));
+    assert!(one["sql"].as_str().unwrap().contains("bob@x.io"), "{}", one["sql"]);
+
+    let count = c.ok_json("count_rows", json!({ "connection": "Masked", "table": "memberships",
+        "filter": { "t": "rel", "schema": "public", "table": "organizations", "on": [["org_id", "id"]], "quant": "some",
+                    "filter": { "t": "cond", "column": "slug", "op": "eq", "args": ["acme"] } } }));
+    assert_eq!(count["count"], 1);
+
+    let bad = c.err("browse_rows", json!({ "connection": "Masked", "table": "users",
+        "filter": { "t": "cond", "column": "nope", "op": "eq", "args": ["1"] } }));
+    assert!(bad.contains("nope"), "{bad}");
+}
+
+#[test]
+fn counts_values_and_profiles_columns() {
+    let fx = Fixture::new("stats", three_levels);
+    let mut c = fx.client();
+    let roles = c.ok_json("value_counts", json!({ "connection": "Masked", "table": "users", "column": "role" }));
+    let values: Vec<&str> = roles["values"].as_array().unwrap().iter().filter_map(|v| v["value"].as_str()).collect();
+    assert_eq!(values.len(), 2, "{roles}");
+    assert!(c.err("value_counts", json!({ "connection": "Masked", "table": "users", "column": "email" })).contains("personal data"));
+    let emails = c.ok_json("value_counts", json!({ "connection": "Full", "table": "users", "column": "email" }));
+    assert_eq!(emails["values"].as_array().unwrap().len(), 2);
+
+    let profile = c.ok_json("profile_table", json!({ "connection": "Masked", "table": "users" }));
+    let email = profile["columns"].as_array().unwrap().iter().find(|col| col["name"] == "email").unwrap();
+    assert_eq!(email["pii"], "email");
+    assert_eq!(email["min"], "[masked: email]");
+    assert!(email["top"].as_array().unwrap().iter().all(|t| t["value"] == "[masked: email]"));
+    assert!(profile["masked"]["maskedColumns"]["email"].is_string());
+}
+
+#[test]
+fn joins_tables() {
+    let fx = Fixture::new("join", three_levels);
+    let mut c = fx.client();
+    let rows = c.ok_json(
+        "run_join_query",
+        json!({
+            "connection": "Masked",
+            "tables": [{ "table": "memberships", "alias": "m" }, { "table": "users", "alias": "u" }, { "table": "organizations", "alias": "o" }],
+            "joins": [{ "alias": "u", "parent": "m", "on": [["user_id", "id"]] }, { "alias": "o", "parent": "m", "on": [["org_id", "id"]] }],
+            "columns": [{ "alias": "o", "column": "name" }, { "alias": "u", "column": "email" }, { "alias": "m", "column": "joined_at" }],
+            "order_by": { "alias": "m", "column": "joined_at" },
+            "include_sql": true
+        }),
+    );
+    assert_eq!(rows["rows"].as_array().unwrap().len(), 2, "{rows}");
+    assert_eq!(rows["rows"][0][0], "Acme");
+    assert_eq!(rows["rows"][0][1], "[masked: email]");
+    assert!(rows["sql"].as_str().unwrap().to_uppercase().contains("JOIN"));
+    assert!(c.err("run_join_query", json!({ "connection": "SchemaOnly", "tables": [{ "table": "users", "alias": "u" }], "joins": [] })).contains("schema only"));
+}

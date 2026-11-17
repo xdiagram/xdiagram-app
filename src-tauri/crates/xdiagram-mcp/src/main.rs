@@ -8,6 +8,8 @@
 //! `XDIAGRAM_DATA_DIR` point elsewhere (tests).
 
 mod access;
+mod data_tools;
+mod mask;
 mod schema_tools;
 mod server;
 

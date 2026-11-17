@@ -277,7 +277,7 @@ pub fn is_ipv4(v: &str) -> bool {
 type Detector = (&'static str, fn(&str) -> bool);
 
 /// The personal-data kind most sampled values match (≥ 60% of up to 1000 values).
-fn detect_pii(values: &[&str]) -> Option<&'static str> {
+pub fn detect_pii(values: &[&str]) -> Option<&'static str> {
     let sample: Vec<&str> = values.iter().take(1000).copied().collect();
     if sample.len() < 3 {
         return None;
@@ -291,7 +291,7 @@ fn detect_pii(values: &[&str]) -> Option<&'static str> {
 }
 
 /// Personal or secret data suggested by the column name alone.
-fn pii_from_name(name: &str) -> Option<&'static str> {
+pub fn pii_from_name(name: &str) -> Option<&'static str> {
     let n = name.to_ascii_lowercase();
     let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
     if has(&["password", "passwd", "pwd", "secret", "token", "api_key", "apikey", "salt"]) {

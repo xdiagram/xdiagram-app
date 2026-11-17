@@ -90,7 +90,7 @@ impl XdiagramServer {
         XdiagramServer {
             access: Arc::new(access),
             cache: Arc::new(SchemaCache::default()),
-            tool_router: Self::tool_router() + Self::schema_router(),
+            tool_router: Self::tool_router() + Self::schema_router() + Self::data_router(),
         }
     }
 
