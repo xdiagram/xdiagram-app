@@ -138,7 +138,7 @@ export type PathOutcome =
 /** Identifier quoting of the copied SQL. */
 export type PathDialect = "postgres" | "mysql" | "mssql" | "sqlite";
 
-// ---- X-ray mode (src-tauri/src/db/workload_db.rs, src-tauri/src/live.rs) ----
+// ---- X-ray mode (src-tauri/crates/xdiagram-core/src/db/workload_db.rs, src-tauri/src/live.rs) ----
 
 export interface WorkloadEndpoint {
   schema: string;
@@ -256,7 +256,7 @@ export interface LiveSample {
   tables: TableRate[];
 }
 
-// ---- Data browser (src-tauri/src/db/browse.rs) ----
+// ---- Data browser (src-tauri/crates/xdiagram-core/src/db/browse.rs) ----
 
 export interface BrowseFilter {
   column: string;
@@ -398,7 +398,7 @@ export interface BrowseResult {
   elapsedMs: number;
 }
 
-// ---- Related data (src-tauri/src/db/related.rs) ----
+// ---- Related data (src-tauri/crates/xdiagram-core/src/db/related.rs) ----
 
 /** What a column holds (Rust `ColKind`): decides the filter operators offered for it. */
 export type ColKind =

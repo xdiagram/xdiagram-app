@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn imports_the_sample_ddl() {
-        let r = import_ddl(include_str!("../../../scripts/sample-schema.sqlite.sql")).unwrap();
+        let r = import_ddl(include_str!("../../../../../scripts/sample-schema.sqlite.sql")).unwrap();
         assert_eq!(r.schema.tables.len(), 4);
         assert_eq!(r.schema.refs.len(), 3);
         assert_eq!(r.skipped, vec!["INSERT ×3", "PRAGMA ×1"]);

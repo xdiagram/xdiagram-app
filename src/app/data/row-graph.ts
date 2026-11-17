@@ -24,7 +24,7 @@ export const MORE_STEP = 25;
 export const MAX_PER_REF = 100;
 export const MAX_NODES = 200;
 export const MAX_LOOKUPS = 64;
-/** Mirrors `MAX_CELL_CHARS` in `src-tauri/src/db/browse.rs`. */
+/** Mirrors `MAX_CELL_CHARS` in `src-tauri/crates/xdiagram-core/src/db/browse.rs`. */
 const MAX_CELL_CHARS = 4000;
 
 export type Direction = "parents" | "children";

@@ -380,7 +380,7 @@ Angular                ──Konva canvas──▶  diagram
 
 `@dbml/connector` needs Node and cannot run in the webview, so the Rust side ports it:
 
-- **PostgreSQL** (`src-tauri/src/db/introspect.rs`) is a port of the connector's queries.
+- **PostgreSQL** (`src-tauri/crates/xdiagram-core/src/db/introspect.rs`) is a port of the connector's queries.
 - **MySQL / MariaDB** (`mysql.rs`) is a port of the connector's queries. It reads the connection's
   database.
 - **SQL Server** (`mssql.rs`) is a port of the connector's queries. It supports SQL logins;
@@ -389,7 +389,7 @@ Angular                ──Konva canvas──▶  diagram
   PRAGMAs, and opens the file read-only. CHECK constraints are not read, because SQLite keeps
   them only inside the `CREATE TABLE` text.
 
-`src-tauri/src/db/dispatch.rs` routes each command to the right engine. The port differs from the
+`src-tauri/crates/xdiagram-core/src/db/dispatch.rs` routes each command to the right engine. The port differs from the
 connector on purpose where the connector is buggy:
 
 - The schema filter is a bind parameter.
@@ -418,7 +418,7 @@ sees, often `localhost`. This works for PostgreSQL, MySQL and SQL Server, X-ray 
 - **Secrets.** The SSH password or key passphrase goes to the OS keychain (`ssh:<profile id>`) only
   when you choose to remember passwords.
 - **TLS** still checks the database's real host name through the tunnel (`verify-full`).
-- **Tunnels** (`src-tauri/src/db/ssh.rs`, russh) listen on `127.0.0.1` only. They are shared by
+- **Tunnels** (`src-tauri/crates/xdiagram-core/src/db/ssh.rs`, russh) listen on `127.0.0.1` only. They are shared by
   everything that talks to the same database, and close after five idle minutes.
 
 ## Big schemas
@@ -616,7 +616,7 @@ X-ray button is disabled.
 
 Code:
 
-- `src-tauri/src/db/workload.rs` — SQL analysis, unit-tested
+- `src-tauri/crates/xdiagram-core/src/db/workload.rs` — SQL analysis, unit-tested
 - `workload_db.rs` — catalog queries
 - `advisor.rs` — data checks and index advice
 - `src-tauri/src/live.rs` — sampling session

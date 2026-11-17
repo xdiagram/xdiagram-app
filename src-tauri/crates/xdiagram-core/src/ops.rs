@@ -75,15 +75,30 @@ pub fn cancel(op_id: &str) -> bool {
     op.token.cancel();
     for interrupt in op.interrupts {
         match interrupt {
-            Interrupt::Postgres(token, tls) => {
-                tauri::async_runtime::spawn(async move {
-                    let _ = token.cancel_query(tls).await;
-                });
-            }
+            Interrupt::Postgres(token, tls) => spawn_detached(async move {
+                let _ = token.cancel_query(tls).await;
+            }),
             Interrupt::Sqlite(handle) => handle.interrupt(),
         }
     }
     true
+}
+
+/// Runs `fut` in the background: on the current tokio runtime, or (called from a thread without
+/// one, such as a synchronous command) on a short-lived thread of its own.
+fn spawn_detached(fut: impl Future<Output = ()> + Send + 'static) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(fut);
+        }
+        Err(_) => {
+            std::thread::spawn(move || {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                    rt.block_on(fut);
+                }
+            });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -106,6 +121,17 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
         assert!(!cancel("op-1"), "finished operations are forgotten");
         assert_eq!(cancellable(None, async { Ok::<_, AppError>(2) }).await.unwrap(), 2);
+    }
+
+    #[test]
+    fn background_work_runs_without_a_runtime() {
+        // A synchronous caller (no tokio runtime on its thread) must not panic.
+        let (tx, rx) = std::sync::mpsc::channel();
+        spawn_detached(async move {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            let _ = tx.send(42);
+        });
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(42));
     }
 
     #[test]

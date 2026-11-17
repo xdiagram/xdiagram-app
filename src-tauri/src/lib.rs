@@ -1,12 +1,11 @@
 mod commands;
-pub mod db;
-mod drafts;
-pub mod error;
 mod files;
-mod fsutil;
 mod live;
-mod ops;
-mod secrets;
+
+// The database layer lives in the Tauri-free `xdiagram-core` crate (shared with xdiagram-mcp);
+// re-exported so `crate::db::…` paths and the examples' `xdiagram_lib::db` keep working.
+pub use xdiagram_core::{db, error};
+pub(crate) use xdiagram_core::{drafts, fsutil, ops, secrets};
 
 use tauri::Manager;
 
