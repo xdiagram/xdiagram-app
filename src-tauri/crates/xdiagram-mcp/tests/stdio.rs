@@ -169,3 +169,51 @@ fn says_how_to_turn_agents_on_when_nothing_is_shared() {
     assert_eq!(list["connections"], json!([]));
     assert!(list["note"].as_str().unwrap().contains("turn on \"AI agents\""));
 }
+
+#[test]
+fn reads_the_schema_as_dbml() {
+    let fx = Fixture::new("schema", |db| json!([sqlite("lite", "Sample", db, json!({ "enabled": true, "data": "schema" }))]));
+    let mut c = fx.client();
+
+    let list = c.ok_json("list_tables", json!({ "connection": "Sample" }));
+    assert_eq!(list["count"], 4);
+    let memberships = list["tables"].as_array().unwrap().iter().find(|t| t["table"] == "memberships").unwrap();
+    assert_eq!(memberships["references"], json!(["organizations", "users"]));
+    assert_eq!(memberships["referencedBy"], json!(["project_members"]));
+    assert_eq!(c.ok_json("list_tables", json!({ "connection": "Sample", "match": "MEMBER" }))["count"], 2);
+
+    let all = c.ok("get_schema_dbml", json!({ "connection": "Sample" }));
+    assert!(all.contains("Table \"users\" {") && all.contains("Ref "), "{all}");
+    let part = c.ok("get_schema_dbml", json!({ "connection": "Sample", "tables": ["users"] }));
+    assert!(part.contains("Table \"users\"") && !part.contains("Table \"memberships\"") && !part.contains("Ref "), "{part}");
+    let near = c.ok("get_schema_dbml", json!({ "connection": "Sample", "tables": ["users"], "include_related": true }));
+    assert!(near.contains("Table \"memberships\"") && near.contains("Ref ") && !near.contains("Table \"project_members\""), "{near}");
+    assert!(c.err("get_schema_dbml", json!({ "connection": "Sample", "tables": ["user"] })).contains("Did you mean \"users\""));
+
+    // Reads no rows, so a schema-only connection may describe tables.
+    let users = c.ok_json("describe_table", json!({ "connection": "Sample", "table": "USERS" }));
+    assert_eq!(users["table"], "users");
+    assert_eq!(users["primaryKey"], json!(["id"]));
+    let email = users["columns"].as_array().unwrap().iter().find(|col| col["name"] == "email").unwrap();
+    assert_eq!((email["kind"].as_str(), email["nullable"].as_bool()), (Some("text"), Some(false)));
+    assert!(users["dbml"].as_str().unwrap().starts_with("Table \"users\""));
+    assert_eq!(users["relationships"].as_array().unwrap().len(), 1, "memberships.user_id → users.id");
+}
+
+#[test]
+fn reads_the_dbml_the_user_keeps_in_the_app() {
+    let fx = Fixture::new("draft", |db| json!([sqlite("lite", "Sample", db, json!({ "enabled": true }))]));
+    let mut c = fx.client();
+    assert!(c.err("get_saved_dbml", json!({ "connection": "Sample" })).contains("no saved DBML"));
+
+    // As the app stores it (DraftService): under the database's key, `dbml` null when unedited.
+    let profile = xdiagram_core::profiles::load_profiles(&fx.dir).unwrap().remove(0);
+    let drafts = xdiagram_core::drafts::Drafts::new(Some(fx.dir.join("drafts")));
+    let key = xdiagram_core::profiles::database_key(&profile);
+    let stored = json!({ "v": 1, "baseline": "Table a { id int }", "dbml": "Table a { id int [note: 'mine'] }\nTableGroup g { a }", "savedAt": "2026-11-17T10:00:00.000Z" });
+    drafts.save(&key, &stored.to_string()).unwrap();
+    let text = c.ok("get_saved_dbml", json!({ "connection": "Sample" }));
+    assert!(text.contains("with the user's edits") && text.contains("TableGroup g") && text.contains("2026-11-17"), "{text}");
+    drafts.save(&key, &json!({ "v": 1, "baseline": "Table a { id int }", "dbml": null, "savedAt": "x" }).to_string()).unwrap();
+    assert!(c.ok("get_saved_dbml", json!({ "connection": "Sample" })).contains("no edits by the user"));
+}

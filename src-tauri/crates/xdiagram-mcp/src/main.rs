@@ -8,6 +8,7 @@
 //! `XDIAGRAM_DATA_DIR` point elsewhere (tests).
 
 mod access;
+mod schema_tools;
 mod server;
 
 use std::path::PathBuf;

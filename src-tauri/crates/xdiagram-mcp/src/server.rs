@@ -17,6 +17,7 @@ use xdiagram_core::db::{Engine, dispatch};
 use xdiagram_core::profiles::{DataAccess, engine_name};
 
 use crate::access::{Access, Conn, TURN_ON_HINT, password_saved, run_op};
+use crate::schema_tools::SchemaCache;
 
 /// What a tool returns: text for the agent (JSON or DBML), or an error message it can act on.
 pub type ToolResult = Result<CallToolResult, String>;
@@ -30,7 +31,7 @@ pub fn json_text(value: &impl Serialize) -> ToolResult {
 }
 
 /// Time allowed for reading a schema or other catalog work, which has no statement time limit.
-const CATALOG_BUDGET: Duration = Duration::from_secs(120);
+pub const CATALOG_BUDGET: Duration = Duration::from_secs(120);
 
 const INSTRUCTIONS: &str = "\
 xdiagram-mcp reads the databases the user saved in xdiagram (PostgreSQL, MySQL/MariaDB, SQL Server, SQLite). \
@@ -47,6 +48,7 @@ with a filter. find_join_paths tells how two tables connect, and run_join_query 
 #[derive(Clone)]
 pub struct XdiagramServer {
     access: Arc<Access>,
+    pub(crate) cache: Arc<SchemaCache>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -85,7 +87,11 @@ struct ConnectionList {
 
 impl XdiagramServer {
     pub fn new(access: Access) -> Self {
-        XdiagramServer { access: Arc::new(access), tool_router: Self::tool_router() }
+        XdiagramServer {
+            access: Arc::new(access),
+            cache: Arc::new(SchemaCache::default()),
+            tool_router: Self::tool_router() + Self::schema_router(),
+        }
     }
 
     pub fn access(&self) -> &Access {
