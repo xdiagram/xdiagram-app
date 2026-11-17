@@ -23,6 +23,7 @@ import type { Engine } from "../core/tauri-api.service";
 import {
   ConnectionProfile,
   ProfilesService,
+  databaseKeyOf,
   engineInfo,
   profileLabel,
   profileMeta,
@@ -270,7 +271,7 @@ export class WorkspaceStore {
       }
       const fresh = await this.fetchDbml(profile, op);
       // The user's DBML for this database comes back, with what changed in the database since merged in.
-      const key = layoutKeyOf(profile);
+      const key = databaseKeyOf(profile);
       const draft = await this.drafts.load(key);
       const merged = draft ? mergeDbml(draft.baseline, draft.dbml, fresh) : { text: fresh, conflicts: [] };
       await this.openDocument(merged.text, this.dbSource(profile), key, fresh);
@@ -980,15 +981,6 @@ function samePositions(a: Record<string, Point>, b: Record<string, Point>): bool
   const keys = Object.keys(a);
   if (keys.length !== Object.keys(b).length) return false;
   return keys.every((k) => b[k] && a[k].x === b[k].x && a[k].y === b[k].y);
-}
-
-/** Where a database's layout is saved. PostgreSQL keeps its original keys, so old layouts still load. */
-function layoutKeyOf(p: ConnectionProfile): string {
-  if (p.engine === "sqlite") return `db:sqlite:${p.path}`;
-  // Through SSH the database host is often "localhost": the SSH server tells it apart.
-  const via = p.ssh?.host ? `@ssh:${p.ssh.host}:${p.ssh.port || 22}` : "";
-  if (p.engine === "postgres") return `db:${p.host}:${p.port}/${p.database}${via}`;
-  return `db:${p.engine}:${p.host}:${p.port}/${p.database}${via}`;
 }
 
 /** The error a cancelled command returns (`AppError::Cancelled`). */

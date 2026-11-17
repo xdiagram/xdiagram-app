@@ -19,6 +19,34 @@ export interface ConnectionProfile {
   path: string;
   /** Reach the database through this SSH server (null: connect directly). */
   ssh: SshSettings | null;
+  /** Whether AI agents may use this connection through xdiagram-mcp, and how much they may read. */
+  mcp: McpSettings;
+}
+
+/**
+ * What xdiagram-mcp may do with a connection. Off unless turned on. `schema`: the schema only;
+ * `masked`: rows too, with values that look like personal data masked; `full`: rows as they are.
+ */
+export interface McpSettings {
+  enabled: boolean;
+  data: McpDataAccess;
+}
+
+export type McpDataAccess = "schema" | "masked" | "full";
+
+export const MCP_DATA_ACCESS: McpDataAccess[] = ["schema", "masked", "full"];
+
+export function newMcp(): McpSettings {
+  return { enabled: false, data: "masked" };
+}
+
+/** Anything unexpected keeps agents out (xdiagram-mcp reads the file the same way). */
+function normalizeMcp(m: unknown): McpSettings {
+  const v = (m ?? {}) as Partial<Record<keyof McpSettings, unknown>>;
+  return {
+    enabled: v.enabled === true,
+    data: MCP_DATA_ACCESS.includes(v.data as McpDataAccess) ? (v.data as McpDataAccess) : "masked",
+  };
 }
 
 export interface SshSettings {
@@ -74,6 +102,7 @@ export function newProfile(engine: Engine = "postgres"): ConnectionProfile {
     schemas: [],
     path: "",
     ssh: null,
+    mcp: newMcp(),
   };
 }
 
@@ -85,6 +114,7 @@ export function normalizeProfile(p: Partial<ConnectionProfile> & { id: string })
     engine: p.engine ?? "postgres",
     path: p.path ?? "",
     ssh: p.ssh ? { ...newSsh(), ...p.ssh } : null,
+    mcp: normalizeMcp(p.mcp),
   };
 }
 
@@ -126,6 +156,19 @@ export function toConnectionInput(p: ConnectionProfile, password?: string, sshSe
         }
       : undefined,
   };
+}
+
+/**
+ * The key a database's layout, edited DBML (drafts) and remembered filters are saved under.
+ * PostgreSQL keeps its original keys, so old layouts still load. xdiagram-mcp builds the same key
+ * (`database_key` in xdiagram-core) to read the drafts.
+ */
+export function databaseKeyOf(p: ConnectionProfile): string {
+  if (p.engine === "sqlite") return `db:sqlite:${p.path}`;
+  // Through SSH the database host is often "localhost": the SSH server tells it apart.
+  const via = p.ssh?.host ? `@ssh:${p.ssh.host}:${p.ssh.port || 22}` : "";
+  if (p.engine === "postgres") return `db:${p.host}:${p.port}/${p.database}${via}`;
+  return `db:${p.engine}:${p.host}:${p.port}/${p.database}${via}`;
 }
 
 const SCHEMES: { re: RegExp; engine: Engine }[] = [

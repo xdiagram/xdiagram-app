@@ -1,0 +1,79 @@
+{
+  "about": "Saved profiles and what the app makes of them. Checked by profiles.spec.ts (toConnectionInput, databaseKeyOf, profileLabel) and by the Rust reader in src-tauri/crates/xdiagram-core/src/profiles.rs, which must build the same connection so passwords saved in the app work in xdiagram-mcp.",
+  "cases": [
+    {
+      "label": "Shop (prod)",
+      "profile": {
+        "id": "pg-1", "name": "Shop (prod)", "engine": "postgres", "host": "DB.Example.com", "port": 6543,
+        "database": "shop", "user": "app", "sslMode": "require", "schemas": ["public", "sales"], "path": "", "ssh": null,
+        "mcp": { "enabled": true, "data": "masked" }
+      },
+      "connectionInput": {
+        "engine": "postgres", "host": "DB.Example.com", "port": 6543, "database": "shop", "user": "app",
+        "sslMode": "require", "profileId": "pg-1"
+      },
+      "databaseKey": "db:DB.Example.com:6543/shop"
+    },
+    {
+      "label": "shop@localhost",
+      "profile": {
+        "id": "my-1", "name": "", "engine": "mysql", "host": "localhost", "port": 3306, "database": "shop", "user": "root",
+        "sslMode": "prefer", "schemas": [], "path": "",
+        "ssh": { "host": " Bastion.example ", "port": 2222, "user": " ops ", "auth": "key", "keyPath": " C:/keys/id_ed25519 " }
+      },
+      "connectionInput": {
+        "engine": "mysql", "host": "localhost", "port": 3306, "database": "shop", "user": "root", "sslMode": "prefer",
+        "profileId": "my-1",
+        "ssh": { "host": "Bastion.example", "port": 2222, "user": "ops", "auth": "key", "keyPath": "C:/keys/id_ed25519" }
+      },
+      "databaseKey": "db:mysql:localhost:3306/shop@ssh: Bastion.example :2222"
+    },
+    {
+      "label": "master@10.0.0.5",
+      "profile": {
+        "id": "ms-1", "name": "", "engine": "mssql", "host": "10.0.0.5", "port": 1433, "database": "master", "user": "sa",
+        "sslMode": "verify-full", "schemas": ["dbo"], "path": "",
+        "ssh": { "host": "jump", "port": 0, "user": "me", "auth": "password", "keyPath": "C:/ignored" },
+        "mcp": { "enabled": false, "data": "full" }
+      },
+      "connectionInput": {
+        "engine": "mssql", "host": "10.0.0.5", "port": 1433, "database": "master", "user": "sa", "sslMode": "verify-full",
+        "profileId": "ms-1",
+        "ssh": { "host": "jump", "port": 22, "user": "me", "auth": "password" }
+      },
+      "databaseKey": "db:mssql:10.0.0.5:1433/master@ssh:jump:22"
+    },
+    {
+      "label": "shop.db",
+      "profile": {
+        "id": "lite-1", "name": "", "engine": "sqlite", "host": "localhost", "port": 0, "database": "", "user": "",
+        "sslMode": "prefer", "schemas": [], "path": "C:\\data\\shop.db",
+        "ssh": { "host": "ignored", "port": 22, "user": "x", "auth": "password", "keyPath": "" }
+      },
+      "connectionInput": { "engine": "sqlite", "path": "C:\\data\\shop.db", "profileId": "lite-1" },
+      "databaseKey": "db:sqlite:C:\\data\\shop.db"
+    },
+    {
+      "label": "d@h",
+      "profile": { "id": "old-1", "name": "", "host": "h", "port": 5432, "database": "d", "user": "u", "sslMode": "prefer", "schemas": [] },
+      "connectionInput": {
+        "engine": "postgres", "host": "h", "port": 5432, "database": "d", "user": "u", "sslMode": "prefer", "profileId": "old-1"
+      },
+      "databaseKey": "db:h:5432/d"
+    },
+    {
+      "label": "Spaced",
+      "profile": {
+        "id": "pg-2", "name": "  Spaced  ", "engine": "postgres", "host": "localhost", "port": 5432, "database": "postgres",
+        "user": "postgres", "sslMode": "disable", "schemas": [], "path": "",
+        "ssh": { "host": "", "port": 22, "user": "", "auth": "password", "keyPath": "" }
+      },
+      "connectionInput": {
+        "engine": "postgres", "host": "localhost", "port": 5432, "database": "postgres", "user": "postgres",
+        "sslMode": "disable", "profileId": "pg-2",
+        "ssh": { "host": "", "port": 22, "user": "", "auth": "password" }
+      },
+      "databaseKey": "db:localhost:5432/postgres"
+    }
+  ]
+}

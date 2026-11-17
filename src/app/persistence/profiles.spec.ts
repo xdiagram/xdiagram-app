@@ -1,4 +1,15 @@
-import { newProfile, newSsh, normalizeProfile, parseConnectionUrl, profileLabel, profileMeta, sshSecretId, toConnectionInput } from "./profiles.service";
+import cases from "./profile-cases.json";
+import {
+  databaseKeyOf,
+  newProfile,
+  newSsh,
+  normalizeProfile,
+  parseConnectionUrl,
+  profileLabel,
+  profileMeta,
+  sshSecretId,
+  toConnectionInput,
+} from "./profiles.service";
 
 describe("connection profiles", () => {
   it("parses URLs for every engine", () => {
@@ -45,5 +56,24 @@ describe("connection profiles", () => {
     expect(sshSecretId("p1")).toBe("ssh:p1");
     // SQLite has no network, so no tunnel
     expect(toConnectionInput({ ...newProfile("sqlite"), id: "s", path: "a.db", ssh: newSsh() }).ssh).toBeUndefined();
+  });
+
+  it("matches the cases xdiagram-mcp is tested against", () => {
+    // xdiagram-core's profiles.rs reads the same file: both sides must build the same connection
+    // (or a saved password is refused) and the same database key (or drafts are not found).
+    expect(cases.cases.length).toBeGreaterThanOrEqual(5);
+    for (const c of cases.cases) {
+      const p = normalizeProfile(c.profile as never);
+      expect(toConnectionInput(p), c.label).toEqual(c.connectionInput);
+      expect(databaseKeyOf(p), c.label).toBe(c.databaseKey);
+      expect(profileLabel(p), c.label).toBe(c.label);
+    }
+  });
+
+  it("keeps AI agents out until a connection allows them", () => {
+    expect(newProfile().mcp).toEqual({ enabled: false, data: "masked" });
+    expect(normalizeProfile({ id: "old" } as never).mcp).toEqual({ enabled: false, data: "masked" });
+    expect(normalizeProfile({ id: "on", mcp: { enabled: true, data: "schema" } } as never).mcp).toEqual({ enabled: true, data: "schema" });
+    expect(normalizeProfile({ id: "odd", mcp: { enabled: "yes", data: "everything" } } as never).mcp).toEqual({ enabled: false, data: "masked" });
   });
 });

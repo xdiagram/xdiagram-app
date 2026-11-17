@@ -8,4 +8,5 @@ pub mod drafts;
 pub mod error;
 pub mod fsutil;
 pub mod ops;
+pub mod profiles;
 pub mod secrets;
