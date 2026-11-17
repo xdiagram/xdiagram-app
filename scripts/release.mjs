@@ -8,6 +8,9 @@
 // never printed. Keep a copy of both in a password manager: without them, installed copies can
 // no longer be updated.
 //
+// The MCP server (xdiagram-mcp) is built first (scripts/build-mcp.mjs) and bundled next to the
+// app by src-tauri/tauri.release.conf.json, which only release builds use.
+//
 // Upload the installers, their .sig files and latest.json to the release tagged v<version>.
 // latest.json points at https://github.com/<owner>/<repo>/releases/download/v<version>/<file>,
 // derived from plugins.updater.endpoints in tauri.conf.json (or --asset-base).
@@ -16,6 +19,8 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { buildMcp } from './build-mcp.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -45,6 +50,12 @@ export function buildManifest({ version, notes, date, artifacts, assetBase, arch
   }
   if (Object.keys(platforms).length === 0) throw new Error('No signed installers found');
   return { version, notes, pub_date: date.toISOString().replace(/\.\d{3}Z$/, 'Z'), platforms };
+}
+
+/** `tauri build` arguments: the release config (it bundles xdiagram-mcp) first, so callers' own
+ * `--config` overrides still win. */
+export function tauriBuildArgs(passThrough) {
+  return ['build', '--config', 'src-tauri/tauri.release.conf.json', ...passThrough];
 }
 
 /** GitHub release asset folder from the manifest endpoint: …/releases/latest/download/latest.json. */
@@ -80,8 +91,9 @@ function main() {
       TAURI_SIGNING_PRIVATE_KEY: readFileSync(keyFile, 'utf8').trim(),
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: existsSync(pwFile) ? readFileSync(pwFile, 'utf8').trim() : '',
     };
+    buildMcp();
     console.log(`Building xdiagram ${version} (signed)…`);
-    execFileSync(process.execPath, [path.join(root, 'node_modules/@tauri-apps/cli/tauri.js'), 'build', ...passThrough], {
+    execFileSync(process.execPath, [path.join(root, 'node_modules/@tauri-apps/cli/tauri.js'), ...tauriBuildArgs(passThrough)], {
       cwd: root, env, stdio: 'inherit',
     });
   }

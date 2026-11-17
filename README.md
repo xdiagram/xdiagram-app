@@ -134,6 +134,10 @@ every change made on the canvas is an edit to it.
   - `pg_dump` output works, data and `COPY` blocks included (they are skipped).
 - **X-ray mode** (PostgreSQL): the diagram of what the database *actually does*, plus an FK & index
   advisor (see below).
+- **AI agents (MCP)**: `xdiagram-mcp`, a Model Context Protocol server installed with the app, lets
+  Claude Code, Claude Desktop and other MCP clients read the connections you open to them: the schema
+  as DBML, rows, counts, profiles, join paths and X-ray. Read-only, with personal data masked by
+  default (see below).
 
 Everything is read-only against the database. SQL the app generates (DDL, sample data, index
 advice) is shown, copied or saved, never executed. The query builder only runs the read-only
@@ -360,9 +364,13 @@ npm install
 npm run tauri dev      # development
 npm run release        # signed installers + latest.json (see "Releases and updates")
 npm test               # frontend unit tests (Vitest)
-npm run test:scripts   # tests of the release script
+npm run test:scripts   # tests of the release and build scripts
 cd src-tauri && cargo test --workspace   # Rust tests, the app and src-tauri/crates/*
 ```
+
+The Rust side is a workspace: the app (`src-tauri`), its Tauri-free database layer
+(`crates/xdiagram-core`), the join-path engine (`crates/join-paths`) and the MCP server
+(`crates/xdiagram-mcp`, see "AI agents (MCP)").
 
 `npm run tauri build` also works for a quick local installer, but it fails at the end without the
 update signing key, because the bundle includes updater artifacts.
@@ -549,6 +557,106 @@ Code: `src-tauri/crates/join-paths` (graph, costs, search, SQL; unit-tested, wit
 by `cargo test -p join-paths --release -- --ignored`), `src/app/paths/` and
 `src/app/state/join-path.store.ts`.
 
+## AI agents (MCP)
+
+`xdiagram-mcp` (installed next to `xdiagram.exe`) is a [Model Context Protocol](https://modelcontextprotocol.io)
+server. MCP clients such as Claude Code and Claude Desktop start it themselves and talk to it over
+stdio, so the app does not need to be open. It uses the connections saved in xdiagram, with the
+passwords the app keeps in the keychain, and it reads the same way the data browser does: read-only,
+and only SELECTs it builds itself.
+
+### Setting it up
+
+1. **Open a connection to agents.** Connect, pick the connection, tick **Let AI agents use this
+   connection (MCP)**, choose what agents may read, and press **Connect** (that saves it). Connections
+   are closed to agents until you do this. Agents use the password saved in the keychain, so keep
+   **Remember password** ticked.
+2. **Add the server to your client.** Settings → **AI agents** shows where the server is.
+   **Copy Claude Code command** gives a command to run in a terminal:
+
+   ```sh
+   claude mcp add --scope user xdiagram -- "<path to>\xdiagram-mcp.exe"
+   ```
+
+   **Copy JSON configuration** gives the `mcpServers` entry for clients that have a configuration
+   file (Claude Desktop: `claude_desktop_config.json`).
+
+Turning a connection on or off applies at once: the server reads the app's files on every call.
+
+### What agents can do
+
+| Tool | What it does |
+|---|---|
+| `list_connections` | The connections open to agents, with their engine, scope and data access |
+| `list_schemas`, `list_tables` | Schemas, then tables with their column counts, notes and neighbours |
+| `get_schema_dbml` | The schema as DBML, as the editor shows it; for big schemas, chosen tables and their neighbours |
+| `describe_table` | One table: columns, kinds, keys, row estimate, its DBML and relationships |
+| `get_saved_dbml` | The DBML the app keeps for the database, with your notes, groups and views |
+| `browse_rows`, `count_rows` | Rows a page at a time, and counts, with the data browser's filters |
+| `value_counts`, `profile_table` | A column's values with their counts; per-column statistics from a sample |
+| `find_join_paths`, `run_join_query` | The best ways to join two tables, and rows across joined tables |
+| `xray_report`, `check_relation` | PostgreSQL: X-ray's report, and whether an undeclared relationship holds |
+
+Filters are the tree the app sends to its Rust side (every condition type: comparisons, lists, text
+matching, searches, column-vs-column, duplicates and related rows); `browse_rows` describes it. The
+DBML comes from the Rust port of `generateDbml` (`xdiagram-core/src/dbml.rs`), checked against
+`@dbml/core` by `cargo test` and `npm run parity`.
+
+### What agents may read
+
+Each connection is set to one of:
+
+- **The schema only**: tables, columns, keys, relationships, join paths and the X-ray report. No tool
+  reads rows.
+- **Rows, with personal data masked** (the default): a column is masked when its name suggests
+  personal or secret data (`email`, `phone`, `password`, `dob`, `iban`, names, addresses…) or when
+  most of its values look like emails, card numbers (Luhn-checked), IBANs, phone numbers or IP
+  addresses; any other single value that looks like an email, card number, IBAN or phone number is
+  masked too. Masked values read `[masked: kind]`. Profiles mask the values of such columns, and
+  `value_counts` refuses them.
+- **Rows as they are.**
+
+Masking catches most personal data, not all, and it is not a security boundary: an agent can still
+filter on a masked column (for example, ask whether some email exists). Share sensitive databases as
+schema only, or connect with a login that cannot read those tables.
+
+### Safety
+
+- Only connections you turned on exist for the server, and each keeps the app's scope: its schema
+  list, and on MySQL only its database.
+- Reads are as read-only as in the app (see the top of this README). SQL Server has no read-only
+  session mode, so there the guarantee is that only generated SELECTs run; a `db_datareader` login
+  adds a second line.
+- The server never runs SQL from the agent. SQL it returns (`include_sql`, join path skeletons, index
+  advice, the `ALTER TABLE` of `check_relation`) is text.
+- Passwords never leave the Rust side. Without a saved password, or for an SSH server whose host key
+  you have not accepted in the app, the error says what to do; the server never accepts host keys.
+- It reads the app's files and never writes them. Each call has the query time limit from Settings
+  and stops when the client cancels it.
+- Close the MCP client before updating xdiagram: while it runs, `xdiagram-mcp.exe` is in use and the
+  installer cannot replace it.
+
+### Development
+
+```sh
+cd src-tauri
+cargo build -p xdiagram-mcp   # target/debug/xdiagram-mcp.exe; Settings finds it next to the dev app
+cargo test -p xdiagram-mcp    # unit tests, and the server over stdio against SQLite copies of the sample
+XDIAGRAM_TEST_PG=postgres://postgres:xdiagram@127.0.0.1:55432/postgres \
+  cargo test -p xdiagram-mcp --test postgres -- --ignored   # every tool against the test container
+npx @modelcontextprotocol/inspector target/debug/xdiagram-mcp.exe --data-dir <folder>
+```
+
+`--data-dir` (or `XDIAGRAM_DATA_DIR`) points the server at a folder other than the app's, such as one
+with a test `connections.json`. The PostgreSQL test needs the X-ray workload (see "Checking the
+introspection"); it saves the password in the keychain under a throwaway id and deletes it afterwards.
+
+- `src-tauri/crates/xdiagram-mcp/src/server.rs` — the server and the connection tools
+- `src-tauri/crates/xdiagram-mcp/src/access.rs` — which connections, scope, time limits, errors
+- `src-tauri/crates/xdiagram-mcp/src/{schema,data,path}_tools.rs` — the other tools
+- `src-tauri/crates/xdiagram-mcp/src/mask.rs` — masking
+- `src-tauri/crates/xdiagram-core/src/profiles.rs` — the saved connections, read as the app writes them
+
 ## Releases and updates
 
 The app checks for new versions on start (Settings) and from **About xdiagram** (palette, or the
@@ -563,7 +671,9 @@ against the update signing key before anything is installed.
    **Back both files up to a password manager**: without them, installed copies can no longer be
    updated. Never commit them.
 3. **Build** with `npm run release -- --notes "What changed"`. Bump `version` in `tauri.conf.json`
-   first. The script signs the installers and writes `src-tauri/target/release/bundle/latest.json`.
+   first. The script builds the MCP server (`scripts/build-mcp.mjs`), which
+   `src-tauri/tauri.release.conf.json` bundles next to the app, then signs the installers and writes
+   `src-tauri/target/release/bundle/latest.json`.
 4. **Publish** a GitHub release tagged `v<version>` with the installers, their `.sig` files and
    `latest.json`. Installed copies find it through `…/releases/latest/download/latest.json`.
 
