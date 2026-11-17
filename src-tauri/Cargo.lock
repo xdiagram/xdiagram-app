@@ -1254,6 +1254,15 @@ dependencies = [
 
 [[package]]
 name = "dirs"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
+name = "dirs"
 version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
@@ -3913,6 +3922,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pastey"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
+
+[[package]]
 name = "pbkdf2"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4629,6 +4644,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "rmcp"
+version = "3.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "391f153431ab68664d946513ea0cb3edbca78eaf99c5a983036cacab6220d85b"
+dependencies = [
+ "chrono",
+ "futures",
+ "indexmap 2.14.2",
+ "libc",
+ "pastey",
+ "percent-encoding",
+ "pin-project-lite",
+ "rmcp-macros",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "unicode-general-category",
+ "unicode-normalization",
+ "uuid",
+]
+
+[[package]]
+name = "rmcp-macros"
+version = "3.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3598e3f36f4af2b5219b133baf7d97a2197039225adc3d4acf3dd8805b5a2aef"
+dependencies = [
+ "darling 0.24.1",
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn 3.0.10",
+]
+
+[[package]]
 name = "rsa"
 version = "0.10.0-rc.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4941,6 +4996,7 @@ version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
 dependencies = [
+ "chrono",
  "dyn-clone",
  "ref-cast",
  "schemars_derive 1.2.3",
@@ -5874,7 +5930,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "cookie",
- "dirs",
+ "dirs 7.0.0",
  "dunce",
  "embed_plist",
  "getrandom 0.3.4",
@@ -5924,7 +5980,7 @@ checksum = "adddb0e648752aaac5da9c3c3c6a68e1e87cab55e3b757b18a9441ef8c3ac614"
 dependencies = [
  "anyhow",
  "cargo_toml",
- "dirs",
+ "dirs 7.0.0",
  "glob",
  "heck 0.5.0",
  "json-patch",
@@ -6093,7 +6149,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d957abbcb3f9f6c76d22a3a0f012f30880640d0bccb5634d2b12a9937e4c872b"
 dependencies = [
  "base64 0.23.1",
- "dirs",
+ "dirs 7.0.0",
  "flate2",
  "futures-util",
  "http",
@@ -6669,7 +6725,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2b9c52859a94554803ccd4a24b98f74148ebc73b90676d783f3490b1bff9d72"
 dependencies = [
  "crossbeam-channel",
- "dirs",
+ "dirs 7.0.0",
  "libappindicator",
  "muda",
  "objc2",
@@ -6730,6 +6786,12 @@ name = "unicode-bidi"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
+
+[[package]]
+name = "unicode-general-category"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b993bddc193ae5bd0d623b49ec06ac3e9312875fdae725a975c51db1cc1677f"
 
 [[package]]
 name = "unicode-ident"
@@ -7607,7 +7669,7 @@ dependencies = [
  "block2",
  "cookie",
  "crossbeam-channel",
- "dirs",
+ "dirs 7.0.0",
  "dom_query 0.29.0",
  "dpi",
  "dunce",
@@ -7715,7 +7777,7 @@ dependencies = [
 
 [[package]]
 name = "xdiagram-core"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "keyring",
  "mysql_async",
@@ -7733,6 +7795,22 @@ dependencies = [
  "tokio-postgres-rustls",
  "tokio-util",
  "webpki-roots",
+]
+
+[[package]]
+name = "xdiagram-mcp"
+version = "0.1.0"
+dependencies = [
+ "dirs 6.0.0",
+ "join-paths",
+ "rmcp",
+ "rusqlite",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "xdiagram-core",
 ]
 
 [[package]]

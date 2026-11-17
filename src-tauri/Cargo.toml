@@ -1,6 +1,6 @@
 [workspace]
 # Pure libraries the app uses, kept free of Tauri so other tools can use them too.
-members = ["crates/join-paths", "crates/xdiagram-core"]
+members = ["crates/join-paths", "crates/xdiagram-core", "crates/xdiagram-mcp"]
 
 [package]
 name = "xdiagram"

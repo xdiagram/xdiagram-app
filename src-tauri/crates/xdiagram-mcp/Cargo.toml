@@ -1,0 +1,28 @@
+[package]
+name = "xdiagram-mcp"
+version = "0.1.0"
+description = "MCP server that lets AI agents read the databases saved in xdiagram, read-only"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[[bin]]
+name = "xdiagram-mcp"
+path = "src/main.rs"
+
+[dependencies]
+xdiagram-core = { path = "../xdiagram-core", features = ["schema"] }
+join-paths = { path = "../join-paths" }
+rmcp = { version = "3.11", default-features = false, features = ["server", "macros", "transport-io"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "io-std", "time", "sync"] }
+tokio-util = "0.7"
+dirs = "6"
+
+[build-dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+rusqlite = { version = "0.42", features = ["bundled"] }
