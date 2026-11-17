@@ -62,6 +62,18 @@ export class ConnectionDialogComponent implements OnInit {
   protected readonly engineShort = (e: Engine) => engineInfo(e).short;
   protected readonly urlPlaceholder = URL_PLACEHOLDER;
 
+  /** What the chosen AI-agent access means, in a line (saved with the connection on Connect). */
+  protected mcpHint(): string {
+    switch (this.draft.mcp.data) {
+      case "schema":
+        return "Tables, columns, keys and relationships. No query reads rows.";
+      case "full":
+        return "Everything the data browser shows, as it is. Still read-only: agents never run SQL of their own.";
+      default:
+        return "Values that look like personal data (emails, phone and card numbers, names, passwords…) are masked. Masking catches most of it, not all: share sensitive databases as schema only.";
+    }
+  }
+
   protected sslModes(): { value: SslMode; label: string }[] {
     if (this.draft.engine === "mssql") {
       return [

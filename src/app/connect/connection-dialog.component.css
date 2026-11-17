@@ -35,6 +35,11 @@ input:focus, select:focus { outline: 2px solid var(--accent-ring); outline-offse
 .port { width: 96px; }
 .check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: 13px; cursor: pointer; }
 .schemas { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px 10px; margin: 0; }
+.agents { border: 1px solid var(--border); border-radius: 8px; padding: 4px 12px 10px; margin: 0; display: grid; gap: 8px; }
+.agents legend { padding: 0 4px; }
+.agents legend .check { font-size: 12.5px; }
+.agents .hint { margin: 0; }
+.hint.warn { color: var(--danger); }
 .ssh { border: 1px solid var(--border); border-radius: 8px; padding: 4px 12px 10px; margin: 0; display: grid; gap: 10px; }
 .ssh legend { padding: 0 4px; }
 .ssh legend .check { font-size: 12.5px; }

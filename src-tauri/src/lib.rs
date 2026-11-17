@@ -52,6 +52,7 @@ pub fn run() {
             commands::introspect,
             commands::cancel_op,
             commands::update_endpoint,
+            commands::mcp_server_path,
             commands::import_sqlite_ddl,
             commands::find_join_paths,
             commands::join_path_sql,

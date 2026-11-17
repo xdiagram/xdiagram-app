@@ -1,8 +1,11 @@
-import { Component, inject, output } from "@angular/core";
+import { Component, OnInit, computed, inject, output, signal } from "@angular/core";
 
+import { TauriApi } from "../core/tauri-api.service";
 import { UpdateService } from "../core/update.service";
 import { DraggableDialogDirective } from "../core/draggable-dialog.directive";
+import { ProfilesService } from "../persistence/profiles.service";
 import { type Settings, SettingsService, type ThemeChoice } from "../persistence/settings.service";
+import { claudeCodeCommand, mcpJsonConfig } from "./mcp-setup";
 
 /** Preferences; every change applies (and is saved) at once. */
 @Component({
@@ -67,6 +70,28 @@ import { type Settings, SettingsService, type ThemeChoice } from "../persistence
         </label>
       </fieldset>
 
+      <fieldset>
+        <legend>AI agents</legend>
+        <p class="note">
+          xdiagram-mcp lets AI agents such as Claude Code read the connections you open to them (Connect → edit a
+          connection → “Let AI agents use this connection”), read-only, without this window open.
+          {{ agentCount() === 1 ? "1 connection is open to agents." : agentCount() + " connections are open to agents." }}
+        </p>
+        @if (mcpPath(); as path) {
+          <code class="path" title="The MCP server">{{ path }}</code>
+          <div class="buttons">
+            <button type="button" (click)="copy(claudeCode(path), 'Command copied')">Copy Claude Code command</button>
+            <button type="button" (click)="copy(jsonConfig(path), 'Configuration copied')">Copy JSON configuration</button>
+            @if (copied(); as c) {
+              <span class="copied">{{ c }}</span>
+            }
+          </div>
+          <p class="note">Run the command in a terminal, or add the JSON to your client's MCP settings (for Claude Desktop, claude_desktop_config.json). Close the client before updating xdiagram.</p>
+        } @else {
+          <p class="note">xdiagram-mcp is not installed next to the app in this build.</p>
+        }
+      </fieldset>
+
       <div class="actions">
         <button type="button" class="link" (click)="about.emit()">About xdiagram…</button>
         <span class="hint">Changes are saved as you make them.</span>
@@ -100,14 +125,43 @@ import { type Settings, SettingsService, type ThemeChoice } from "../persistence
     .link { font: inherit; font-size: 12.5px; border: 0; background: none; color: var(--accent); padding: 0; cursor: pointer; }
     .primary { font: inherit; font-size: 13px; border: 1px solid var(--accent); background: var(--accent); color: #fff; padding: 7px 16px;
       border-radius: 7px; cursor: pointer; }
+    .note { margin: 0; font-size: 12.5px; color: var(--text-muted); }
+    .path { font-family: var(--mono); font-size: 11.5px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 7px;
+      padding: 6px 8px; overflow-wrap: anywhere; user-select: all; }
+    .buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .buttons button { font: inherit; font-size: 12.5px; border: 1px solid var(--border); background: var(--panel); color: var(--text);
+      padding: 5px 10px; border-radius: 7px; cursor: pointer; }
+    .buttons button:hover { background: var(--hover); }
+    .copied { font-size: 12px; color: var(--ok); }
   `,
 })
-export class SettingsDialogComponent {
+export class SettingsDialogComponent implements OnInit {
   readonly closed = output<void>();
   readonly about = output<void>();
   protected readonly updates = inject(UpdateService);
   private readonly settings = inject(SettingsService);
+  private readonly api = inject(TauriApi);
+  private readonly profiles = inject(ProfilesService);
   protected readonly s = this.settings.settings;
+  protected readonly mcpPath = signal<string | null>(null);
+  protected readonly agentCount = computed(() => this.profiles.profiles().filter((p) => p.mcp.enabled).length);
+  protected readonly copied = signal<string | null>(null);
+  protected readonly claudeCode = claudeCodeCommand;
+  protected readonly jsonConfig = mcpJsonConfig;
+  private copiedTimer: ReturnType<typeof setTimeout> | undefined;
+
+  async ngOnInit(): Promise<void> {
+    void this.profiles.load();
+    this.mcpPath.set(await this.api.mcpServerPath().catch(() => null));
+  }
+
+  protected copy(text: string, done: string): void {
+    void navigator.clipboard?.writeText(text).then(() => {
+      this.copied.set(done);
+      clearTimeout(this.copiedTimer);
+      this.copiedTimer = setTimeout(() => this.copied.set(null), 2500);
+    });
+  }
   protected readonly themes: { value: ThemeChoice; label: string }[] = [
     { value: "system", label: "System" },
     { value: "light", label: "Light" },

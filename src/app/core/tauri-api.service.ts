@@ -658,6 +658,11 @@ export class TauriApi {
     return invoke("has_password", { profileId });
   }
 
+  /** The MCP server installed next to the app, or null (not installed in this build). */
+  mcpServerPath(): Promise<string | null> {
+    return invoke("mcp_server_path");
+  }
+
   /** Resolves to the saved path, or `null` if the user cancelled the dialog. */
   saveFile(req: SaveFileRequest): Promise<string | null> {
     return invoke("save_file", { ...req });

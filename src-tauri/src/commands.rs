@@ -339,6 +339,15 @@ pub fn unwatch_file(files: tauri::State<'_, FileState>, path: String) {
     files.unwatch(std::path::Path::new(&path));
 }
 
+/// Where the MCP server (xdiagram-mcp, installed next to the app) is, when it is there: Settings
+/// shows how to add it to an MCP client.
+#[tauri::command]
+pub fn mcp_server_path() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let path = exe.with_file_name(if cfg!(windows) { "xdiagram-mcp.exe" } else { "xdiagram-mcp" });
+    path.is_file().then(|| path.to_string_lossy().into_owned())
+}
+
 /// The update manifest URL (`plugins.updater.endpoints[0]` in tauri.conf.json): the frontend skips
 /// update checks while it is the placeholder, and links to the releases page derived from it.
 #[tauri::command]
