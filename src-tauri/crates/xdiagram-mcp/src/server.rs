@@ -17,6 +17,7 @@ use xdiagram_core::db::{Engine, dispatch};
 use xdiagram_core::profiles::{DataAccess, engine_name};
 
 use crate::access::{Access, Conn, TURN_ON_HINT, password_saved, run_op};
+use crate::path_tools::XrayCache;
 use crate::schema_tools::SchemaCache;
 
 /// What a tool returns: text for the agent (JSON or DBML), or an error message it can act on.
@@ -49,6 +50,7 @@ with a filter. find_join_paths tells how two tables connect, and run_join_query 
 pub struct XdiagramServer {
     access: Arc<Access>,
     pub(crate) cache: Arc<SchemaCache>,
+    pub(crate) xray: Arc<XrayCache>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -90,7 +92,8 @@ impl XdiagramServer {
         XdiagramServer {
             access: Arc::new(access),
             cache: Arc::new(SchemaCache::default()),
-            tool_router: Self::tool_router() + Self::schema_router() + Self::data_router(),
+            xray: Arc::new(XrayCache::default()),
+            tool_router: Self::tool_router() + Self::schema_router() + Self::data_router() + Self::path_router(),
         }
     }
 

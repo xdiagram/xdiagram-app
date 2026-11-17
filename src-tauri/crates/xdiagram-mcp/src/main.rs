@@ -10,6 +10,7 @@
 mod access;
 mod data_tools;
 mod mask;
+mod path_tools;
 mod schema_tools;
 mod server;
 

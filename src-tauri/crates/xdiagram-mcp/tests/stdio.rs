@@ -307,3 +307,26 @@ fn joins_tables() {
     assert!(rows["sql"].as_str().unwrap().to_uppercase().contains("JOIN"));
     assert!(c.err("run_join_query", json!({ "connection": "SchemaOnly", "tables": [{ "table": "users", "alias": "u" }], "joins": [] })).contains("schema only"));
 }
+
+#[test]
+fn finds_join_paths_and_refuses_xray_off_postgres() {
+    let fx = Fixture::new("paths", three_levels);
+    let mut c = fx.client();
+    // Schema-only connections may plan joins: no rows are read.
+    let found = c.ok_json("find_join_paths", json!({ "connection": "SchemaOnly", "from": "users", "to": "project_members" }));
+    let best = &found["paths"][0];
+    assert_eq!(best["tables"], json!(["users", "memberships", "project_members"]));
+    assert_eq!(best["steps"][1]["on"], json!([["org_id", "org_id"], ["user_id", "user_id"]]), "the composite key");
+    assert!(best["sql"].as_str().unwrap().contains("JOIN"));
+    // The route's `query` feeds run_join_query as it is.
+    let mut query = best["query"].clone();
+    query["connection"] = json!("Full");
+    let rows = c.ok_json("run_join_query", query);
+    assert_eq!(rows["rows"], json!([]), "the sample has no project members");
+
+    let none = c.ok("find_join_paths", json!({ "connection": "Full", "from": "users", "to": "organizations", "avoid": ["memberships"] }));
+    assert!(none.contains("only through the avoided tables"), "{none}");
+    assert!(c.err("find_join_paths", json!({ "connection": "Full", "from": "users", "to": "organization" })).contains("Did you mean \"organizations\""));
+    assert!(c.err("xray_report", json!({ "connection": "Full" })).contains("not a PostgreSQL connection"));
+    assert!(c.err("check_relation", json!({ "connection": "SchemaOnly", "child_table": "users", "child_columns": ["id"], "parent_table": "users", "parent_columns": ["id"] })).contains("schema only"));
+}
