@@ -625,7 +625,9 @@ Code:
 ## Checking the introspection
 
 `scripts/parity.mjs` runs the Rust introspection and `@dbml/connector` against the same database. It
-diffs the JSON and the generated DBML, and checks that the DBML parses:
+diffs the JSON and the generated DBML, and checks that the DBML parses. It also checks that the Rust
+DBML writer (`xdiagram-core/src/dbml.rs`, used by the MCP server) writes exactly what
+`generateDbml` writes:
 
 ```sh
 # PostgreSQL
@@ -649,7 +651,12 @@ npm run parity -- --engine mssql \
 ```
 
 Use `127.0.0.1` rather than `localhost`, because Node may try IPv6 first and time out. To build the
-SQLite sample, see the first line of `scripts/sample-schema.sqlite.sql`.
+SQLite sample, see the first line of `scripts/sample-schema.sqlite.sql`. SQLite has no connector, so
+`npm run parity -- --engine sqlite <file>` runs only the DBML checks.
+
+The Rust DBML writer is also unit-tested against `@dbml/core` without a database: `cargo test`
+compares it with the `.dbml` files next to the schema fixtures in `xdiagram-core/tests/dbml`, which
+`node scripts/dbml-fixtures.mjs` regenerates.
 
 `cd src-tauri && cargo run --example dump_schema -- --engine <engine> <connection>` prints the Rust
 side alone.

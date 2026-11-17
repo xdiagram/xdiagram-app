@@ -1,0 +1,17 @@
+Table "authors" {
+  "id" int [pk, not null, increment]
+  "name" varchar(100) [not null, default: 'anon', note: 'Pen name']
+}
+
+Table "books" {
+  "id" int [pk, not null, increment]
+  "author_id" int
+  "format" enum('paper','ebook') [not null, default: 'paper']
+
+  Indexes {
+    author_id [type: btree, name: "author_id"]
+  }
+  Note: 'Books we sell'
+}
+
+Ref "books_ibfk_1":"authors"."id" ?<? "books"."author_id" [update: cascade, delete: restrict]

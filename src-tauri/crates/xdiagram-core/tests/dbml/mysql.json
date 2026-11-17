@@ -1,0 +1,32 @@
+{
+  "tables": [
+    { "name": "authors", "note": { "value": "" } },
+    { "name": "books", "note": { "value": "Books we sell" } }
+  ],
+  "fields": {
+    "authors": [
+      { "name": "id", "type": { "type_name": "int", "schemaName": null }, "dbdefault": null, "not_null": true, "increment": true, "note": { "value": "" } },
+      { "name": "name", "type": { "type_name": "varchar(100)", "schemaName": null }, "dbdefault": { "type": "string", "value": "anon" }, "not_null": true, "increment": false, "note": { "value": "Pen name" } }
+    ],
+    "books": [
+      { "name": "id", "type": { "type_name": "int", "schemaName": null }, "dbdefault": null, "not_null": true, "increment": true, "note": { "value": "" } },
+      { "name": "author_id", "type": { "type_name": "int", "schemaName": null }, "dbdefault": null, "not_null": false, "increment": false, "note": { "value": "" } },
+      { "name": "format", "type": { "type_name": "enum('paper','ebook')", "schemaName": null }, "dbdefault": { "type": "string", "value": "paper" }, "not_null": true, "increment": false, "note": { "value": "" } }
+    ]
+  },
+  "enums": [],
+  "tableConstraints": {
+    "authors": { "id": { "pk": true, "checks": [] } },
+    "books": { "id": { "pk": true, "checks": [] } }
+  },
+  "refs": [
+    { "name": "books_ibfk_1", "endpoints": [
+      { "tableName": "books", "fieldNames": ["author_id"], "relation": "0..*" },
+      { "tableName": "authors", "fieldNames": ["id"], "relation": "0..1" }
+    ], "onDelete": "RESTRICT", "onUpdate": "CASCADE" }
+  ],
+  "indexes": {
+    "books": [{ "name": "author_id", "type": "BTREE", "columns": [{ "type": "column", "value": "author_id" }] }]
+  },
+  "checks": {}
+}

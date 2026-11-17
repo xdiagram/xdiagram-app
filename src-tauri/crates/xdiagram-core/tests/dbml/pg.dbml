@@ -1,0 +1,79 @@
+Enum "user_status" {
+  "active"
+  "banned"
+}
+
+Table "users" {
+  "id" int4 [pk, not null, increment]
+  "email" public.citext [unique, not null, check: `email <> ''`, note: 'Login name']
+  "status" user_status [not null, default: 'active']
+  "bio" "character varying(200)" [default: '''line1
+line2''']
+  "tags" "text[]"
+  "active" bool [not null, default: true]
+  "deleted" bool
+  "score" numeric(5,2) [default: 1.5]
+  "created_at" timestamptz [not null, default: `now()`]
+
+  Indexes {
+    `lower(email)` [type: btree, unique, name: "users_email_lower_idx"]
+    created_at [type: btree, name: "users_created_idx"]
+  }
+  Note: '''People who sign in.
+One row per account.'''
+}
+
+Table "orders" {
+  "id" int8 [pk, not null, increment]
+  "user_id" int4 [not null]
+  "region_code" bpchar(2)
+  "kind" sales.order_kind
+  "shape" sales.sales.box2d
+}
+
+Table "order_lines" {
+  "order_id" int8 [not null]
+  "line_no" int4 [not null]
+  "qty" int4 [not null, default: 1]
+
+  Checks {
+    `qty > 0` [name: 'qty_positive']
+    `line_no >= 1`
+  }
+
+  Indexes {
+    (order_id, line_no) [pk, name: "order_lines_pkey"]
+  }
+  Note: '''It\'s a line'''
+}
+
+Ref "orders_user_id_fkey":"users"."id" <? "orders"."user_id" [update: no action, delete: cascade]
+
+Ref "orders_region_fkey":"sales"."regions"."code" ?<? "orders"."region_code"
+
+Ref "order_lines_order_id_fkey":"orders"."id" <? "order_lines"."order_id" [delete: set null]
+
+Ref "invoices_order_id_fkey":"orders"."id" ?<? "sales"."invoices"."order_id"
+
+Ref "invoices_line_fkey":"order_lines".("order_id", "line_no") <? "sales"."invoices".("line_order_id", "line_no")
+
+Enum "sales"."order_kind" {
+  "web"
+  "shop"
+}
+
+Table "sales"."invoices" {
+  "id" int4 [pk, not null, increment]
+  "order_id" int8
+  "line_order_id" int8 [not null]
+  "line_no" int4 [not null]
+
+  Indexes {
+    (order_id, `line_no + 1`) [type: hash, name: "invoices_multi"]
+  }
+  Note: 'back\\slash'
+}
+
+Table "sales"."regions" {
+  "code" bpchar(2) [pk, not null]
+}

@@ -3,6 +3,7 @@
 //! and the read-only queries of the data browser, profiler, query builder and X-ray.
 
 pub mod db;
+pub mod dbml;
 pub mod drafts;
 pub mod error;
 pub mod fsutil;

@@ -3,9 +3,12 @@
 //   node scripts/parity.mjs "postgres://postgres:pw@localhost:5432/postgres" [schema1,schema2]
 //   node scripts/parity.mjs --engine mysql "mysql://root:pw@localhost:3306/shop"
 //   node scripts/parity.mjs --engine mssql "Server=localhost,1433;Database=shop;User Id=sa;Password=…;Encrypt=true;TrustServerCertificate=true" [schemas]
+//   node scripts/parity.mjs --engine sqlite path/to/file.db
 //
-// Runs both against the same database, deep-diffs the schema JSON and the generated DBML.
-// Exits non-zero on any difference.
+// Runs both against the same database, deep-diffs the schema JSON and the generated DBML. Also
+// checks that the Rust DBML writer (xdiagram-core's dbml.rs, used by xdiagram-mcp) writes the
+// same text as @dbml/core's generateDbml for the Rust output. SQLite has no connector, so only
+// that DBML check runs. Exits non-zero on any difference.
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -17,8 +20,8 @@ const { connector } = connectorPkg;
 const argv = process.argv.slice(2);
 const engine = argv[0] === '--engine' ? argv.splice(0, 2)[1] : 'postgres';
 const [url, schemas = ''] = argv;
-if (!url || !['postgres', 'mysql', 'mssql'].includes(engine)) {
-  console.error('usage: node scripts/parity.mjs [--engine postgres|mysql|mssql] <connection> [schema1,schema2]');
+if (!url || !['postgres', 'mysql', 'mssql', 'sqlite'].includes(engine)) {
+  console.error('usage: node scripts/parity.mjs [--engine postgres|mysql|mssql|sqlite] <connection> [schema1,schema2]');
   process.exit(2);
 }
 
@@ -27,7 +30,7 @@ let refConnection = url;
 if (schemas && engine === 'postgres') refConnection = `${url}${url.includes('?') ? '&' : '?'}schemas=${schemas}`;
 if (schemas && engine === 'mssql') refConnection = `${url};schemas=${schemas}`;
 
-const reference = await connector.fetchSchemaJson(refConnection, engine);
+const reference = engine === 'sqlite' ? null : await connector.fetchSchemaJson(refConnection, engine);
 const rustArgs = ['run', '-q', '--example', 'dump_schema', '--', '--engine', engine, url, ...(schemas ? [schemas] : [])];
 const rust = JSON.parse(
   execFileSync('cargo', rustArgs, { cwd: path.join(root, 'src-tauri'), maxBuffer: 1 << 28 }).toString(),
@@ -102,6 +105,27 @@ try {
   console.log(`FAIL: the generated DBML does not parse: line ${first.location?.start?.line}: ${first.message}`);
   process.exit(1);
 }
+// The Rust DBML writer must write exactly what generateDbml writes (xdiagram-mcp relies on it).
+const writerDbml = execFileSync('cargo', ['run', '-q', '-p', 'xdiagram-core', '--example', 'schema_to_dbml'], {
+  cwd: path.join(root, 'src-tauri'),
+  input: JSON.stringify(rust),
+  maxBuffer: 1 << 28,
+}).toString();
+if (writerDbml !== rawDbml) {
+  const a = rawDbml.split('\n');
+  const b = writerDbml.split('\n');
+  const at = a.findIndex((line, i) => line !== b[i]);
+  console.log(`FAIL: the Rust DBML writer differs from generateDbml at line ${at + 1}`);
+  console.log(`    generateDbml: ${JSON.stringify(a[at])}`);
+  console.log(`    rust writer:  ${JSON.stringify(b[at])}`);
+  process.exit(1);
+}
+const writerNote = 'Rust DBML writer identical';
+if (engine === 'sqlite') {
+  console.log(`OK: ${rust.tables.length} tables, ${rust.refs.length} refs; generated DBML parses; ${writerNote}`);
+  process.exit(0);
+}
+
 let referenceNote = '';
 try {
   importer.generateDbml(reference);
@@ -119,7 +143,7 @@ const indexCount = Object.values(rust.indexes).flat().length;
 if (diffs.length === 0 && dbmlRef === dbmlRust) {
   console.log(
     `OK: identical schema JSON and DBML (${tables} tables, ${refs} refs, ${rust.enums.length} enums, ` +
-      `${indexCount} indexes; raw DBML ${rawDbml.split('\n').length} lines)${referenceNote}`,
+      `${indexCount} indexes; raw DBML ${rawDbml.split('\n').length} lines; ${writerNote})${referenceNote}`,
   );
 } else {
   console.log(`MISMATCH: ${diffs.length} JSON difference(s); DBML ${dbmlRef === dbmlRust ? 'identical' : 'differs'}`);

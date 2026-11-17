@@ -2,11 +2,12 @@
 //!
 //! The JSON produced here is fed unchanged to `@dbml/core`'s `importer.generateDbml`,
 //! so key names (including their mixed casing) must match the TypeScript interfaces exactly.
+//! It can be read back (tests, `xdiagram-core::dbml` parity checks).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NoteInfo {
     pub value: String,
 }
@@ -17,14 +18,14 @@ impl NoteInfo {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TypeInfo {
     pub type_name: String,
     #[serde(rename = "schemaName")]
     pub schema_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DefaultInfo {
     /// 'string' | 'number' | 'boolean' | 'expression'
     #[serde(rename = "type")]
@@ -32,7 +33,7 @@ pub struct DefaultInfo {
     pub value: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Field {
     pub name: String,
     #[serde(rename = "type")]
@@ -43,43 +44,43 @@ pub struct Field {
     pub note: NoteInfo,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Table {
     pub name: String,
     /// Empty for engines without schemas in the connector output (MySQL): the key is then omitted.
-    #[serde(rename = "schemaName", skip_serializing_if = "String::is_empty")]
+    #[serde(rename = "schemaName", default, skip_serializing_if = "String::is_empty")]
     pub schema_name: String,
     pub note: NoteInfo,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CheckConstraint {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub expression: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ColumnConstraint {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pk: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unique: Option<bool>,
     pub checks: Vec<CheckConstraint>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RefEndpoint {
     #[serde(rename = "tableName")]
     pub table_name: String,
-    #[serde(rename = "schemaName", skip_serializing_if = "String::is_empty")]
+    #[serde(rename = "schemaName", default, skip_serializing_if = "String::is_empty")]
     pub schema_name: String,
     #[serde(rename = "fieldNames")]
     pub field_names: Vec<String>,
     pub relation: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Ref {
     pub name: String,
     pub endpoints: Vec<RefEndpoint>,
@@ -89,20 +90,20 @@ pub struct Ref {
     pub on_update: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EnumValue {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Enum {
     pub name: String,
-    #[serde(rename = "schemaName", skip_serializing_if = "String::is_empty")]
+    #[serde(rename = "schemaName", default, skip_serializing_if = "String::is_empty")]
     pub schema_name: String,
     pub values: Vec<EnumValue>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IndexColumn {
     /// 'column' | 'expression'
     #[serde(rename = "type")]
@@ -110,20 +111,20 @@ pub struct IndexColumn {
     pub value: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Index {
     pub name: String,
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub index_type: Option<String>,
     pub columns: Vec<IndexColumn>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pk: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unique: Option<bool>,
 }
 
 /// Dictionaries are keyed by `schemaName.tableName`.
-#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct DatabaseSchema {
     pub tables: Vec<Table>,
     pub fields: BTreeMap<String, Vec<Field>>,
