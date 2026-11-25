@@ -86,7 +86,7 @@ import { claudeCodeCommand, mcpJsonConfig } from "./mcp-setup";
               <span class="copied">{{ c }}</span>
             }
           </div>
-          <p class="note">Run the command in a terminal, or add the JSON to your client's MCP settings (for Claude Desktop, claude_desktop_config.json). Close the client before updating xdiagram.</p>
+          <p class="note">Run the command in a terminal, or add the JSON to your client's MCP settings (for Claude Desktop, claude_desktop_config.json). Updating xdiagram replaces the server even while the client runs (the client switches to the new one when it restarts it); if you installed the .msi, close the client first.</p>
         } @else {
           <p class="note">xdiagram-mcp is not installed next to the app in this build.</p>
         }

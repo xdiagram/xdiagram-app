@@ -14,7 +14,7 @@ mod path_tools;
 mod schema_tools;
 mod server;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use rmcp::ServiceExt;
@@ -44,6 +44,9 @@ fn main() -> ExitCode {
             }
             other => return usage_error(&format!("unknown argument {other}")),
         }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        remove_old_copies(&exe);
     }
     let Some(data_dir) = data_dir.or_else(access::default_data_dir) else {
         eprintln!("xdiagram-mcp: cannot find the app data folder; pass --data-dir");
@@ -76,4 +79,39 @@ fn main() -> ExitCode {
 fn usage_error(message: &str) -> ExitCode {
     eprintln!("xdiagram-mcp: {message}\n\n{USAGE}");
     ExitCode::from(2)
+}
+
+/// Deletes the copies of `exe` that the installer moved aside while they ran
+/// (`xdiagram-mcp.exe.<n>.old`, see src-tauri/installer/hooks.nsh). One that still runs, for
+/// another client, cannot be deleted and stays for next time.
+fn remove_old_copies(exe: &Path) {
+    let (Some(dir), Some(name)) = (exe.parent(), exe.file_name().and_then(|n| n.to_str())) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let prefix = format!("{name}.");
+    for entry in entries.flatten() {
+        if entry.file_name().to_str().is_some_and(|f| f.starts_with(&prefix) && f.ends_with(".old")) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removes_the_copies_the_installer_moved_aside() {
+        let dir = std::env::temp_dir().join(format!("xd-mcp-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let files = ["xdiagram-mcp.exe", "xdiagram-mcp.exe.1.old", "xdiagram-mcp.exe.2.old", "xdiagram.exe", "xdiagram-mcp.exe.log", "other.exe.1.old"];
+        for f in files {
+            std::fs::write(dir.join(f), "x").unwrap();
+        }
+        remove_old_copies(&dir.join("xdiagram-mcp.exe"));
+        let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        left.sort();
+        assert_eq!(left, ["other.exe.1.old", "xdiagram-mcp.exe", "xdiagram-mcp.exe.log", "xdiagram.exe"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

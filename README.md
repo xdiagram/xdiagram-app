@@ -639,8 +639,11 @@ schema only, or connect with a login that cannot read those tables.
   accepted in the app, the error says what to do in xdiagram; the server never accepts host keys.
 - It reads the app's files and never writes them. Each call has the query time limit from Settings
   and stops when the client cancels it.
-- Close the MCP client before updating xdiagram: while it runs, `xdiagram-mcp.exe` is in use and the
-  installer cannot replace it.
+- Updating xdiagram does not need the MCP client closed. A running `xdiagram-mcp.exe` cannot be
+  overwritten, so the installer (`src-tauri/installer/hooks.nsh`) moves it aside to
+  `xdiagram-mcp.exe.<n>.old` and installs the new one; the client keeps the old copy until it
+  restarts the server, and old copies are deleted once nothing runs them (by the next install, the
+  uninstaller, or the server at start). With the MSI, close the client first.
 
 ### Development
 
