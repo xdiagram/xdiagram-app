@@ -50,6 +50,9 @@ pub struct MaskReport {
     /// Other values masked one by one.
     #[serde(skip_serializing_if = "is_zero")]
     pub masked_values: usize,
+    /// `masked_values` row by row (rows: `mask_rows` only).
+    #[serde(skip)]
+    pub values_by_row: Vec<usize>,
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -60,6 +63,11 @@ impl MaskReport {
     pub fn is_empty(&self) -> bool {
         self.masked_columns.is_empty() && self.masked_values == 0
     }
+
+    /// The report for the first `rows` rows only (a page cut to fit a reply).
+    pub fn keep_rows(&mut self, rows: usize) {
+        self.masked_values = self.values_by_row.iter().take(rows).sum();
+    }
 }
 
 /// The personal-data kind of a whole column, from its name or from these values of it.
@@ -69,7 +77,7 @@ pub fn column_kind(name: &str, values: &[&str]) -> Option<&'static str> {
 
 /// Masks rows of text values (`None` is NULL, which stays as it is) under `columns`.
 pub fn mask_rows(access: DataAccess, columns: &[String], rows: &mut [Vec<Option<String>>]) -> MaskReport {
-    let mut report = MaskReport::default();
+    let mut report = MaskReport { values_by_row: vec![0; rows.len()], ..Default::default() };
     if access == DataAccess::Full {
         return report;
     }
@@ -84,12 +92,13 @@ pub fn mask_rows(access: DataAccess, columns: &[String], rows: &mut [Vec<Option<
             report.masked_columns.insert(name.clone(), kind.to_string());
             continue;
         }
-        for row in rows.iter_mut() {
+        for (r, row) in rows.iter_mut().enumerate() {
             if let Some(Some(v)) = row.get_mut(i)
                 && let Some(kind) = cell_kind(v)
             {
                 *v = masked(kind);
                 report.masked_values += 1;
+                report.values_by_row[r] += 1;
             }
         }
     }

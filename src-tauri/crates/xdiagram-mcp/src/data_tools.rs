@@ -20,7 +20,7 @@ use xdiagram_core::db::values::ValuesRequest;
 use crate::access::{Conn, run_op};
 use crate::mask::{self, MaskReport};
 use crate::schema_tools::{TableRef, resolve_table};
-use crate::server::{ToolResult, XdiagramServer, json_text};
+use crate::server::{MAX_REPLY_LEN, ToolResult, XdiagramServer, json_text, text};
 
 const DEFAULT_ROWS: u32 = 50;
 const MAX_ROWS: u32 = 200;
@@ -187,6 +187,11 @@ struct Rows {
     /// Values cut to 500 characters.
     #[serde(skip_serializing_if = "is_zero")]
     shortened_values: usize,
+    /// Rows of the page left out so the reply fits; they start the next page.
+    #[serde(skip_serializing_if = "is_zero")]
+    rows_cut: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sql: Option<String>,
 }
@@ -249,23 +254,80 @@ async fn data_table(server: &XdiagramServer, conn: &Conn, name: &str, ct: &Cance
     Ok(table)
 }
 
-fn shorten(rows: &mut [Vec<Option<String>>]) -> usize {
-    let mut cut = 0;
-    for v in rows.iter_mut().flatten().flatten() {
-        if v.chars().count() > MAX_VALUE_CHARS {
-            *v = format!("{}…", v.chars().take(MAX_VALUE_CHARS).collect::<String>());
-            cut += 1;
-        }
-    }
-    cut
+/// Cuts values longer than `MAX_VALUE_CHARS`; how many were cut, row by row.
+fn shorten(rows: &mut [Vec<Option<String>>]) -> Vec<usize> {
+    rows.iter_mut()
+        .map(|row| {
+            let mut cut = 0;
+            for v in row.iter_mut().flatten() {
+                if v.chars().count() > MAX_VALUE_CHARS {
+                    *v = format!("{}…", v.chars().take(MAX_VALUE_CHARS).collect::<String>());
+                    cut += 1;
+                }
+            }
+            cut
+        })
+        .collect()
 }
 
-fn rows_out(conn: &Conn, result: BrowseResult, offset: u64, sql: Option<String>) -> Rows {
+/// A page of rows as the agent gets it: masked, long values cut, and when the page would not fit
+/// in one reply, only the rows that do (the others start the next page).
+fn rows_reply(conn: &Conn, result: BrowseResult, offset: u64, sql: Option<String>) -> ToolResult {
     let columns: Vec<String> = result.columns.iter().map(|c| c.name.clone()).collect();
     let mut rows = result.rows;
     let masked = mask::mask_rows(conn.profile.mcp.data, &columns, &mut rows);
-    let shortened_values = shorten(&mut rows);
-    Rows { columns, rows, has_more: result.has_more, offset, order: result.ordered_by, masked, shortened_values, sql }
+    let cut_by_row = shorten(&mut rows);
+    let page = Rows {
+        columns,
+        rows: Vec::new(),
+        has_more: result.has_more,
+        offset,
+        order: result.ordered_by,
+        masked,
+        shortened_values: 0,
+        rows_cut: 0,
+        note: None,
+        sql,
+    };
+    text(fit_rows(page, rows, &cut_by_row)?)
+}
+
+/// The page with as many of `rows` as fit in `MAX_REPLY_LEN`, serialized.
+fn fit_rows(mut page: Rows, rows: Vec<Vec<Option<String>>>, cut_by_row: &[usize]) -> Result<String, String> {
+    let all = rows.len();
+    let (has_more, columns) = (page.has_more, page.columns.len());
+    let mut render = |kept: usize| -> Result<String, String> {
+        page.rows = rows[..kept].to_vec();
+        page.shortened_values = cut_by_row[..kept].iter().sum();
+        page.masked.keep_rows(kept);
+        page.rows_cut = all - kept;
+        page.has_more = has_more || kept < all;
+        page.note = (kept < all).then(|| {
+            format!(
+                "Only {kept} of the {all} rows fit in one reply; the next page starts at offset {}. Pass fewer `columns` or a smaller `limit` for more rows per reply.",
+                page.offset + kept as u64
+            )
+        });
+        serde_json::to_string(&page).map_err(|e| e.to_string())
+    };
+    let whole = render(all)?;
+    if whole.len() <= MAX_REPLY_LEN {
+        return Ok(whole);
+    }
+    let one = render(1)?;
+    if one.len() > MAX_REPLY_LEN {
+        return Err(format!(
+            "One row with these {columns} columns is already {} characters, more than a reply carries. Pass `columns` to choose some.",
+            one.len()
+        ));
+    }
+    // The longest prefix that fits: `fits` always fits, `over` never does.
+    let (mut fits, mut over) = (1, all);
+    while over - fits > 1 {
+        let mid = (fits + over) / 2;
+        if render(mid)?.len() <= MAX_REPLY_LEN { fits = mid } else { over = mid }
+    }
+    render(fits)
 }
 
 impl XdiagramServer {
@@ -316,7 +378,7 @@ Write dates out (2026-11-01); describe_table gives each column's kind, which dec
         let input = conn.input.clone();
         let offset = request.offset;
         let result = run_op(&ct, budget, async move { dispatch::browse(&input, request).await }).await.map_err(|e| conn.explain(e))?;
-        json_text(&rows_out(&conn, result, offset, sql))
+        rows_reply(&conn, result, offset, sql)
     }
 
     #[tool(
@@ -415,7 +477,23 @@ Write dates out (2026-11-01); describe_table gives each column's kind, which dec
         if !report.is_empty() {
             out["masked"] = serde_json::to_value(&report).map_err(|e| e.to_string())?;
         }
-        json_text(&out)
+        let mut reply = out.to_string();
+        if reply.len() > MAX_REPLY_LEN {
+            // A wide table: the most common values go first (value_counts gives them per column).
+            for col in out["columns"].as_array_mut().into_iter().flatten() {
+                col["top"] = serde_json::json!([]);
+            }
+            out["note"] = "The most common values are left out to fit the reply; value_counts gives them for one column.".into();
+            reply = out.to_string();
+        }
+        if reply.len() > MAX_REPLY_LEN {
+            return Err(format!(
+                "The profile of {} columns is {} characters, more than a reply carries. Use value_counts on the columns you need.",
+                profile.columns.len(),
+                reply.len()
+            ));
+        }
+        text(reply)
     }
 
     #[tool(
@@ -468,13 +546,14 @@ Write dates out (2026-11-01); describe_table gives each column's kind, which dec
         let offset = request.offset;
         let input = conn.input.clone();
         let result = run_op(&ct, budget, async move { dispatch::browse_join(&input, request).await }).await.map_err(|e| conn.explain(e))?;
-        json_text(&rows_out(&conn, result, offset, sql))
+        rows_reply(&conn, result, offset, sql)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn numbers_filter_nodes_without_ids() {
@@ -500,6 +579,48 @@ mod tests {
         assert_eq!(ids, ["n2", "mine", "n3"]);
         let FilterNode::Rel { filter: Some(inner), .. } = &items[2] else { panic!() };
         assert!(matches!(inner.as_ref(), FilterNode::Cond { id, .. } if id == "n4"));
+    }
+
+    fn page(columns: usize, rows: usize, value_len: usize) -> (Rows, Vec<Vec<Option<String>>>) {
+        let page = Rows {
+            columns: (0..columns).map(|i| format!("c{i}")).collect(),
+            rows: Vec::new(),
+            has_more: false,
+            offset: 40,
+            order: Vec::new(),
+            masked: MaskReport { values_by_row: vec![1; rows], masked_values: rows, ..Default::default() },
+            shortened_values: 0,
+            rows_cut: 0,
+            note: None,
+            sql: None,
+        };
+        (page, vec![vec![Some("x".repeat(value_len)); columns]; rows])
+    }
+
+    #[test]
+    fn cuts_pages_to_fit_a_reply() {
+        let (small, rows) = page(3, 10, 20);
+        let whole: Value = serde_json::from_str(&fit_rows(small, rows, &[0; 10]).unwrap()).unwrap();
+        assert_eq!((whole["rows"].as_array().unwrap().len(), whole["hasMore"].as_bool()), (10, Some(false)));
+        assert!(whole.get("rowsCut").is_none() && whole.get("note").is_none());
+
+        // 200 rows of 40 columns × 100 characters: about 830 kB, so a few dozen rows fit.
+        let (wide, rows) = page(40, 200, 100);
+        let reply = fit_rows(wide, rows, &[1; 200]).unwrap();
+        assert!(reply.len() <= MAX_REPLY_LEN);
+        let cut: Value = serde_json::from_str(&reply).unwrap();
+        let kept = cut["rows"].as_array().unwrap().len();
+        assert!((10..20).contains(&kept), "{kept}");
+        assert_eq!(cut["rowsCut"], 200 - kept);
+        assert_eq!(cut["hasMore"], true);
+        assert_eq!((cut["shortenedValues"].as_u64(), cut["maskedValues"].as_u64()), (Some(kept as u64), Some(kept as u64)), "counts of the kept rows");
+        assert!(cut["note"].as_str().unwrap().contains(&format!("offset {}", 40 + kept)), "{}", cut["note"]);
+        // One more row would not have fitted.
+        let (wide, rows) = page(40, kept + 1, 100);
+        assert!(fit_rows(wide, rows, &[1; 201][..kept + 1]).unwrap().contains("rowsCut"));
+
+        let (huge, rows) = page(200, 3, 500);
+        assert!(fit_rows(huge, rows, &[0; 3]).unwrap_err().contains("Pass `columns`"));
     }
 
     #[test]

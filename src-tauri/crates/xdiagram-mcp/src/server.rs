@@ -34,6 +34,10 @@ pub fn json_text(value: &impl Serialize) -> ToolResult {
 /// Time allowed for reading a schema or other catalog work, which has no statement time limit.
 pub const CATALOG_BUDGET: Duration = Duration::from_secs(120);
 
+/// The most text one reply carries (bytes of UTF-8, about 15,000–20,000 tokens): clients cap tool
+/// output (Claude Code at 25,000 tokens by default), so larger results are cut or split instead.
+pub const MAX_REPLY_LEN: usize = 60_000;
+
 const INSTRUCTIONS: &str = "\
 xdiagram-mcp reads the databases the user saved in xdiagram (PostgreSQL, MySQL/MariaDB, SQL Server, SQLite). \
 Everything is read-only: the server only runs SELECTs and catalog queries it builds itself, never SQL you write.

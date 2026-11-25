@@ -602,6 +602,11 @@ matching, searches, column-vs-column, duplicates and related rows); `browse_rows
 DBML comes from the Rust port of `generateDbml` (`xdiagram-core/src/dbml.rs`), checked against
 `@dbml/core` by `cargo test` and `npm run parity`.
 
+Replies stay under 60,000 characters, as clients cap tool output (Claude Code at 25,000 tokens by
+default): a page of rows that would be larger carries the rows that fit and says where the next page
+starts, a long saved DBML comes in parts, and a table list, DBML selection, profile or X-ray report
+that is too large drops its least useful part first or asks for a narrower request.
+
 ### What agents may read
 
 Each connection is set to one of:

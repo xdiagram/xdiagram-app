@@ -2,7 +2,7 @@
 //! detail, and the DBML the user keeps for the database in the app. Introspection is cached for a
 //! few minutes per connection, as agents tend to ask several questions in a row.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -20,13 +20,10 @@ use xdiagram_core::drafts::Drafts;
 use xdiagram_core::profiles::database_key;
 
 use crate::access::{Conn, run_op};
-use crate::server::{CATALOG_BUDGET, ToolResult, XdiagramServer, json_text, text};
+use crate::server::{CATALOG_BUDGET, MAX_REPLY_LEN, ToolResult, XdiagramServer, json_text, text};
 
 /// How long a schema read is reused (`refresh: true` reads it again).
 const CACHE_TTL: Duration = Duration::from_secs(300);
-/// Above this, `get_schema_dbml` without `tables` asks for a selection instead of flooding the
-/// agent's context.
-const MAX_DBML_CHARS: usize = 60_000;
 
 #[derive(Default)]
 pub struct SchemaCache {
@@ -114,6 +111,40 @@ pub fn resolve_table(schema: &DatabaseSchema, name: &str) -> Result<TableRef, St
     })
 }
 
+/// Table names for a message, or how many tables each schema has when the names would take too
+/// much of the reply.
+fn table_names(tables: &[TableRef]) -> String {
+    let names = tables.iter().map(TableRef::key).collect::<Vec<_>>().join(", ");
+    if names.len() <= MAX_REPLY_LEN / 2 {
+        return names;
+    }
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for t in tables {
+        *counts.entry(&t.schema).or_default() += 1;
+    }
+    let counts: Vec<String> = counts.iter().map(|(s, n)| if s.is_empty() { n.to_string() } else { format!("{s}: {n}") }).collect();
+    format!("{} in all ({}), too many to name here; list_tables with `match` finds them", tables.len(), counts.join(", "))
+}
+
+/// `text` in parts of at most `max` bytes, cut after a line where there is one.
+fn split_parts(text: &str, max: usize) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut rest = text;
+    while rest.len() > max {
+        let mut cut = max;
+        while !rest.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        if let Some(newline) = rest[..cut].rfind('\n') {
+            cut = newline + 1;
+        }
+        parts.push(&rest[..cut]);
+        rest = &rest[cut..];
+    }
+    parts.push(rest);
+    parts
+}
+
 /// The tables `table` references and the tables referencing it.
 fn neighbours(schema: &DatabaseSchema, table: &TableRef) -> (BTreeSet<String>, BTreeSet<String>) {
     let (mut out, mut inbound) = (BTreeSet::new(), BTreeSet::new());
@@ -162,6 +193,15 @@ pub struct SchemaDbmlArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct SavedDbmlArgs {
+    /// The saved connection: its name as list_connections shows it, or its id.
+    pub connection: String,
+    /// Which part of a long DBML, from 1 (the reply says how many there are).
+    #[serde(default)]
+    pub part: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct TableArgs {
     /// The saved connection: its name as list_connections shows it, or its id.
     pub connection: String,
@@ -205,11 +245,11 @@ impl XdiagramServer {
         let conn = self.conn(&args.connection)?;
         let schema = self.cache.get(&conn, args.refresh, &ct).await?;
         let filter = args.filter.as_deref().map(str::to_lowercase).filter(|f| !f.is_empty());
-        let tables: Vec<TableSummary> = tables_of(&schema)
-            .into_iter()
-            .filter(|t| filter.as_ref().is_none_or(|f| t.key().to_lowercase().contains(f)))
+        let chosen: Vec<TableRef> = tables_of(&schema).into_iter().filter(|t| filter.as_ref().is_none_or(|f| t.key().to_lowercase().contains(f))).collect();
+        let mut tables: Vec<TableSummary> = chosen
+            .iter()
             .map(|t| {
-                let (references, referenced_by) = neighbours(&schema, &t);
+                let (references, referenced_by) = neighbours(&schema, t);
                 let key = t.key();
                 TableSummary {
                     columns: schema.fields.get(&key).map_or(0, Vec::len),
@@ -220,7 +260,21 @@ impl XdiagramServer {
                 }
             })
             .collect();
-        json_text(&serde_json::json!({ "count": tables.len(), "tables": tables }))
+        let reply = serde_json::json!({ "count": tables.len(), "tables": tables }).to_string();
+        if reply.len() <= MAX_REPLY_LEN {
+            return text(reply);
+        }
+        // Many tables: the neighbours go first (describe_table and get_schema_dbml give them).
+        for t in &mut tables {
+            t.references.clear();
+            t.referenced_by.clear();
+        }
+        let note = "references and referencedBy are left out to fit the reply; pass `match` for fewer tables with them, or see describe_table.";
+        let reply = serde_json::json!({ "count": tables.len(), "tables": tables, "note": note }).to_string();
+        if reply.len() <= MAX_REPLY_LEN {
+            return text(reply);
+        }
+        Err(format!("{} tables are too many to describe in one reply; pass `match` to list some. Tables: {}", tables.len(), table_names(&chosen)))
     }
 
     #[tool(
@@ -233,15 +287,15 @@ impl XdiagramServer {
         let schema = self.cache.get(&conn, args.refresh, &ct).await?;
         if args.tables.is_empty() {
             let dbml = to_dbml(&schema);
-            if dbml.len() <= MAX_DBML_CHARS {
+            if dbml.len() <= MAX_REPLY_LEN {
                 return text(dbml);
             }
-            let names: Vec<String> = tables_of(&schema).iter().map(TableRef::key).collect();
+            let all = tables_of(&schema);
             return text(format!(
                 "The whole schema is {} tables ({} characters of DBML), too much at once. Call get_schema_dbml again with `tables` (and `include_related` for their neighbours). Tables: {}",
-                names.len(),
+                all.len(),
                 dbml.len(),
-                names.join(", ")
+                table_names(&all)
             ));
         }
         let mut keys: HashSet<String> = HashSet::new();
@@ -256,7 +310,18 @@ impl XdiagramServer {
                 keys.extend(inbound);
             }
         }
-        text(to_dbml(&subset(&schema, &keys)))
+        let dbml = to_dbml(&subset(&schema, &keys));
+        if dbml.len() <= MAX_REPLY_LEN {
+            return text(dbml);
+        }
+        let chosen: Vec<TableRef> = tables_of(&schema).into_iter().filter(|t| keys.contains(&t.key())).collect();
+        text(format!(
+            "These {} tables are {} characters of DBML, too much at once{}. Ask for fewer of them: {}",
+            chosen.len(),
+            dbml.len(),
+            if args.include_related { " (include_related added their neighbours)" } else { "" },
+            table_names(&chosen)
+        ))
     }
 
     #[tool(
@@ -289,10 +354,10 @@ impl XdiagramServer {
 
     #[tool(
         name = "get_saved_dbml",
-        description = "The DBML the user keeps for this database in xdiagram: the schema as last read, plus their own edits (notes, table groups, saved views, relationships they added). Useful for what the tables mean; it can be older than the database.",
+        description = "The DBML the user keeps for this database in xdiagram: the schema as last read, plus their own edits (notes, table groups, saved views, relationships they added). Useful for what the tables mean; it can be older than the database. A long one comes in parts (`part`).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
-    async fn get_saved_dbml(&self, Parameters(args): Parameters<crate::server::ConnectionArg>) -> ToolResult {
+    async fn get_saved_dbml(&self, Parameters(args): Parameters<SavedDbmlArgs>) -> ToolResult {
         let conn = self.conn(&args.connection)?;
         let drafts = Drafts::new(Some(self.access().data_dir().join("drafts")));
         let Some(raw) = drafts.load(&database_key(&conn.profile)).map_err(|e| e.to_string())? else {
@@ -306,12 +371,23 @@ impl XdiagramServer {
         let dbml = stored.get("dbml").and_then(Value::as_str);
         let saved_at = stored.get("savedAt").and_then(Value::as_str).unwrap_or("an unknown time");
         let edited = dbml.is_some_and(|d| d != baseline);
-        text(format!(
-            "// Kept by xdiagram for \"{}\", saved {saved_at}{}.\n{}",
+        let header = format!(
+            "// Kept by xdiagram for \"{}\", saved {saved_at}{}.",
             conn.name(),
-            if edited { ", with the user's edits" } else { " (no edits by the user)" },
-            dbml.unwrap_or(baseline)
-        ))
+            if edited { ", with the user's edits" } else { " (no edits by the user)" }
+        );
+        // Room for the header and the part line.
+        let parts = split_parts(dbml.unwrap_or(baseline), MAX_REPLY_LEN.saturating_sub(header.len() + 200).max(1_000));
+        let n = args.part.unwrap_or(1);
+        let Some(body) = n.checked_sub(1).and_then(|i| parts.get(i)) else {
+            return Err(format!("The saved DBML has {} part(s); `part` goes from 1 to {}.", parts.len(), parts.len()));
+        };
+        let part_line = match (parts.len(), n < parts.len()) {
+            (1, _) => String::new(),
+            (total, true) => format!("// Part {n} of {total}: call get_saved_dbml with part {} for the next.\n", n + 1),
+            (total, false) => format!("// Part {n} of {total}, the last.\n"),
+        };
+        text(format!("{header}\n{part_line}{body}"))
     }
 }
 
@@ -345,6 +421,29 @@ mod tests {
         s.tables.push(dup);
         assert!(resolve_table(&s, "users").unwrap_err().contains("several schemas"));
         assert_eq!(resolve_table(&s, "sales.users").unwrap().schema, "sales");
+    }
+
+    #[test]
+    fn splits_long_text_after_lines() {
+        let text = "Table a {\n  id int\n}\n\nTable b {\n  id int\n}\n";
+        let parts = split_parts(text, 25);
+        assert_eq!(parts.concat(), text, "nothing lost");
+        assert!(parts.iter().all(|p| p.len() <= 25 && p.ends_with('\n')), "{parts:?}");
+        assert_eq!(split_parts("short", 25), ["short"]);
+        // A line longer than a part is cut, on a character boundary.
+        let long = "é".repeat(20);
+        let parts = split_parts(&long, 7);
+        assert_eq!(parts.concat(), long);
+        assert!(parts.iter().all(|p| p.len() <= 7));
+    }
+
+    #[test]
+    fn names_tables_or_counts_them() {
+        let t = |schema: &str, table: String| TableRef { schema: schema.into(), table };
+        assert_eq!(table_names(&[t("public", "a".into()), t("sales", "b".into())]), "public.a, sales.b");
+        let many: Vec<TableRef> = (0..3000).map(|i| t(if i < 1000 { "public" } else { "sales" }, format!("table_number_{i}"))).collect();
+        let text = table_names(&many);
+        assert!(text.starts_with("3000 in all (public: 1000, sales: 2000)"), "{text}");
     }
 
     #[test]

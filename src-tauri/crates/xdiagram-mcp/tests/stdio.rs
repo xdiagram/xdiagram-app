@@ -287,6 +287,56 @@ fn counts_values_and_profiles_columns() {
 }
 
 #[test]
+fn keeps_replies_small_enough_for_the_agent() {
+    let fx = Fixture::new("big", three_levels);
+    let db = rusqlite::Connection::open(fx.dir.join("sample.db")).unwrap();
+    let cols: Vec<String> = (0..30).map(|i| format!("c{i}")).collect();
+    let defs: Vec<String> = cols.iter().map(|c| format!("{c} TEXT")).collect();
+    db.execute_batch(&format!("CREATE TABLE wide (id INTEGER PRIMARY KEY, {}); BEGIN;", defs.join(", "))).unwrap();
+    let insert = format!("INSERT INTO wide ({}) VALUES ({})", cols.join(", "), vec!["?1"; cols.len()].join(", "));
+    for _ in 0..250 {
+        db.execute(&insert, ["v".repeat(400)]).unwrap();
+    }
+    db.execute_batch("COMMIT;").unwrap();
+    drop(db);
+    let mut c = fx.client();
+
+    // 200 rows × 30 values × 400 characters is 2.4 MB: the page is cut, and the next one follows on.
+    let page = c.ok_json("browse_rows", json!({ "connection": "Full", "table": "wide", "limit": 200 }));
+    let kept = page["rows"].as_array().unwrap().len();
+    assert!(kept > 0 && kept < 200, "{kept}");
+    assert_eq!((page["rowsCut"].as_u64(), page["hasMore"].as_bool()), (Some(200 - kept as u64), Some(true)));
+    let next = c.ok_json("browse_rows", json!({ "connection": "Full", "table": "wide", "limit": 200, "offset": kept }));
+    assert_eq!(next["rows"][0][0], (kept + 1).to_string(), "pages are ordered by the primary key");
+    let narrow = c.ok_json("browse_rows", json!({ "connection": "Full", "table": "wide", "limit": 200, "columns": ["id"] }));
+    assert_eq!(narrow["rows"].as_array().unwrap().len(), 200);
+    assert!(narrow.get("rowsCut").is_none());
+
+    // A long saved DBML comes in parts that add up to the whole.
+    let profile = xdiagram_core::profiles::load_profiles(&fx.dir).unwrap().remove(0);
+    let drafts = xdiagram_core::drafts::Drafts::new(Some(fx.dir.join("drafts")));
+    let dbml: String = (0..2000).map(|i| format!("Table t{i} {{\n  id int [pk, note: 'row {i} of the long saved schema']\n}}\n\n")).collect();
+    drafts.save(&xdiagram_core::profiles::database_key(&profile), &json!({ "v": 1, "baseline": dbml, "dbml": null, "savedAt": "x" }).to_string()).unwrap();
+    let mut body = String::new();
+    let mut part = 1;
+    loop {
+        let reply = c.ok("get_saved_dbml", json!({ "connection": "Masked", "part": part }));
+        assert!(reply.len() <= 60_000, "part {part}: {} bytes", reply.len());
+        let mut lines = reply.splitn(3, '\n');
+        let (_header, part_line) = (lines.next().unwrap(), lines.next().unwrap());
+        assert!(part_line.starts_with(&format!("// Part {part} of ")), "{part_line}");
+        body.push_str(lines.next().unwrap());
+        if part_line.ends_with("the last.") {
+            break;
+        }
+        part += 1;
+    }
+    assert!(part >= 2);
+    assert_eq!(body, dbml);
+    assert!(c.err("get_saved_dbml", json!({ "connection": "Masked", "part": part + 1 })).contains(&format!("from 1 to {part}")));
+}
+
+#[test]
 fn joins_tables() {
     let fx = Fixture::new("join", three_levels);
     let mut c = fx.client();

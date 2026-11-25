@@ -21,7 +21,7 @@ use xdiagram_core::dbml::table_key;
 use crate::access::{Conn, run_op};
 use crate::mask;
 use crate::schema_tools::{TableRef, resolve_table, tables_of};
-use crate::server::{CATALOG_BUDGET, ToolResult, XdiagramServer, json_text, text};
+use crate::server::{CATALOG_BUDGET, MAX_REPLY_LEN, ToolResult, XdiagramServer, json_text, text};
 
 const XRAY_TTL: Duration = Duration::from_secs(300);
 /// Example queries kept per discovered relationship, and their length.
@@ -308,7 +308,7 @@ impl XdiagramServer {
         let ep = |e: &workload_db::Endpoint| endpoint_key(&e.schema, &e.table, &e.columns);
         let mut usage: Vec<_> = r.declared_usage.iter().collect();
         usage.sort_by_key(|u| std::cmp::Reverse(u.calls));
-        let out = json!({
+        let mut out = json!({
             "statsReset": r.stats_reset,
             "statements": r.statements,
             "undeclaredJoins": r.relations.iter().map(|rel| json!({
@@ -333,7 +333,28 @@ impl XdiagramServer {
             "seqScanHeavyTables": r.tables.iter().filter(|t| t.seq_scan_heavy).map(|t| json!({ "table": table_key(&t.schema, &t.table), "rows": t.rows, "seqScans": t.seq_scan, "indexScans": t.idx_scan })).collect::<Vec<_>>(),
             "oneToOneForeignKeys": r.cardinality.iter().filter(|c| c.verdict == "1:1").map(|c| format!("{}.{} -> {}.{}", table_key(&c.schema, &c.table), c.column, table_key(&c.parent_schema, &c.parent_table), c.parent_column)).collect::<Vec<_>>(),
         });
-        json_text(&out)
+        let reply = out.to_string();
+        if reply.len() <= MAX_REPLY_LEN {
+            return text(reply);
+        }
+        // A busy database: the example queries go first.
+        for join in out["undeclaredJoins"].as_array_mut().into_iter().flatten() {
+            if let Some(j) = join.as_object_mut() {
+                j.remove("exampleQueries");
+            }
+        }
+        out["note"] = "exampleQueries are left out to fit the reply.".into();
+        let reply = out.to_string();
+        if reply.len() <= MAX_REPLY_LEN {
+            return text(reply);
+        }
+        Err(format!(
+            "The X-ray report of \"{}\" is {} characters, more than a reply carries ({} undeclared joins, {} pieces of index advice).",
+            conn.name(),
+            reply.len(),
+            r.relations.len(),
+            r.index_advice.len()
+        ))
     }
 
     #[tool(
