@@ -9,10 +9,11 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
+use xdiagram_core::db::ssh::SshAuth;
 use xdiagram_core::db::{ConnectionInput, Engine};
 use xdiagram_core::error::AppError;
-use xdiagram_core::ops;
 use xdiagram_core::profiles::{self, ConnectionProfile, DataAccess};
+use xdiagram_core::{ops, secrets};
 
 /// What to tell an agent (and through it, the user) when no connection is available.
 pub const TURN_ON_HINT: &str = "In xdiagram, edit the connection (Connect, then the connection's Edit button) and turn on \"AI agents\".";
@@ -169,27 +170,76 @@ impl Conn {
 
     /// An error as the agent should read it, with what the user can do about it.
     pub fn explain(&self, err: AppError) -> String {
-        let hint = match &err {
-            AppError::UnknownHostKey { .. } => Some(
-                "The SSH server's host key is not trusted yet. Connect once in xdiagram and accept the key; agents cannot accept it.".to_string(),
-            ),
-            AppError::Cancelled => None,
-            _ if self.profile.engine != Engine::Sqlite && !password_saved(&self.profile) => Some(format!(
-                "No password is saved for \"{}\". In xdiagram, connect with \"Remember password\" ticked.",
-                self.name()
-            )),
-            _ => None,
-        };
-        match hint {
+        match self.hint(&err) {
             Some(hint) => format!("{err} ({hint})"),
             None => err.to_string(),
         }
     }
+
+    /// What the user can do about `err`, when it is about trusting the server or a saved secret
+    /// (the agent can do neither).
+    fn hint(&self, err: &AppError) -> Option<String> {
+        let name = self.name();
+        let ssh_secret = match self.profile.ssh.as_ref().map(|s| s.auth) {
+            Some(SshAuth::Key) => "key passphrase",
+            _ => "password",
+        };
+        Some(match err {
+            AppError::UnknownHostKey { .. } => {
+                "The SSH server's host key is not trusted yet. Connect once in xdiagram and accept the key; agents cannot accept it.".to_string()
+            }
+            AppError::Ssh(m) if ssh_secret_missing(m) => {
+                format!("No SSH {ssh_secret} is saved for \"{name}\". In xdiagram, connect once with it and \"Remember passwords\" ticked.")
+            }
+            AppError::Ssh(m) if ssh_secret_refused(m) => {
+                format!("The SSH {ssh_secret} saved for \"{name}\" was refused. In xdiagram, connect with the right one and \"Remember passwords\" ticked.")
+            }
+            AppError::Invalid(m) if m == secrets::MISMATCH => {
+                format!("The connection was edited since its password was saved. In xdiagram, connect to \"{name}\" with \"Remember password\" ticked.")
+            }
+            _ if auth_failure(err) && password_saved(&self.profile) => {
+                format!("The password saved for \"{name}\" was refused. In xdiagram, connect with the right one and \"Remember password\" ticked.")
+            }
+            _ if auth_failure(err) => format!("No password is saved for \"{name}\". In xdiagram, connect with \"Remember password\" ticked."),
+            _ => return None,
+        })
+    }
+}
+
+/// Whether the database turned the login down for its password (wrong, or none was saved), as
+/// opposed to any other failure, which a password hint would only confuse.
+fn auth_failure(err: &AppError) -> bool {
+    match err {
+        // 28P01 invalid_password; "password missing" when the server asks for one and none is saved
+        // (the cause of tokio-postgres' "invalid configuration", which AppError's text includes).
+        AppError::Db(e) => e.code().is_some_and(|c| c.code() == "28P01") || err.to_string().contains("password missing"),
+        // MySQL 1045 "Access denied for user … (using password: …)"; SQL Server 18456.
+        AppError::Driver(m) => (m.contains("Access denied for user") && m.contains("using password")) || m.contains("Login failed for user"),
+        _ => false,
+    }
+}
+
+/// The SSH secret was needed and is not saved (`authenticate` in xdiagram-core `db/ssh.rs`).
+fn ssh_secret_missing(message: &str) -> bool {
+    message.starts_with("enter the SSH password") || message.ends_with("passphrase: enter it")
+}
+
+/// The saved SSH secret did not work.
+fn ssh_secret_refused(message: &str) -> bool {
+    message.ends_with("did not accept the password") || message.contains("passphrase does not unlock")
 }
 
 /// Whether the keychain holds the connection's password (it is never read here).
 pub fn password_saved(p: &ConnectionProfile) -> bool {
-    xdiagram_core::secrets::has_secret(&p.id).unwrap_or(false)
+    secrets::has_secret(&p.id).unwrap_or(false)
+}
+
+/// For a connection through SSH with a password: whether the keychain holds that password.
+pub fn ssh_password_saved(p: &ConnectionProfile) -> Option<bool> {
+    p.ssh
+        .as_ref()
+        .filter(|s| !s.host.trim().is_empty() && s.auth == SshAuth::Password)
+        .map(|_| secrets::has_secret(&format!("ssh:{}", p.id)).unwrap_or(false))
 }
 
 pub fn quoted_list(items: &[String]) -> String {
@@ -272,6 +322,43 @@ mod tests {
         assert!(ms.check_schema("public").is_ok(), "the app's alias for dbo");
         let schema_only = conn(serde_json::json!({ "id": "x", "mcp": { "enabled": true, "data": "schema" } }));
         assert!(schema_only.require_rows().is_err() && all.require_rows().is_ok());
+    }
+
+    #[test]
+    fn hints_only_at_what_the_user_can_fix() {
+        // Ids no keychain entry has, so no password is saved for them.
+        let conn = |v: Value| Conn::new(ConnectionProfile::from_json(&v).unwrap());
+        let my = conn(serde_json::json!({ "id": "xd-mcp-hint-test-my", "name": "Shop", "engine": "mysql" }));
+        let denied = AppError::Driver("MySQL: ERROR 1045 (28000): Access denied for user 'app'@'10.0.0.2' (using password: NO)".into());
+        assert!(my.explain(denied).contains("No password is saved for \"Shop\""));
+        let no_grant = AppError::Driver("MySQL: ERROR 1044 (42000): Access denied for user 'app'@'%' to database 'other'".into());
+        assert!(!my.explain(no_grant).contains("password is saved"), "a missing grant is not about the password");
+        let ms = conn(serde_json::json!({ "id": "xd-mcp-hint-test-ms", "name": "Ledger", "engine": "mssql" }));
+        assert!(ms.explain(AppError::Driver("SQL Server: Token error: 'Login failed for user 'sa'.' (code: 18456)".into())).contains("No password is saved"));
+
+        // Errors that have nothing to do with a password get no hint.
+        for err in [
+            AppError::Invalid("Stopped after 45 seconds (time limit)".into()),
+            AppError::Driver("MySQL: ERROR 1054 (42S22): Unknown column 'nope' in 'where clause'".into()),
+            AppError::Cancelled,
+        ] {
+            let text = err.to_string();
+            assert_eq!(my.explain(err), text);
+        }
+        let edited = my.explain(AppError::Invalid(secrets::MISMATCH.into()));
+        assert!(edited.contains("edited since its password was saved"), "{edited}");
+
+        let tunnel = |auth: &str| {
+            conn(serde_json::json!({ "id": "xd-mcp-hint-test-ssh", "name": "Remote", "ssh": { "host": "bastion", "user": "me", "auth": auth } }))
+        };
+        let missing = tunnel("password").explain(AppError::Ssh("enter the SSH password for me@bastion:22".into()));
+        assert!(missing.contains("No SSH password is saved for \"Remote\""), "{missing}");
+        let refused = tunnel("key").explain(AppError::Ssh("the passphrase does not unlock the key file".into()));
+        assert!(refused.contains("SSH key passphrase saved for \"Remote\" was refused"), "{refused}");
+        assert!(tunnel("key").explain(AppError::Ssh("no key file at C:\\k".into())).ends_with("no key file at C:\\k"));
+        assert_eq!(ssh_password_saved(&tunnel("password").profile), Some(false));
+        assert_eq!(ssh_password_saved(&tunnel("key").profile), None, "a key's passphrase may not exist");
+        assert_eq!(ssh_password_saved(&my.profile), None);
     }
 
     #[test]

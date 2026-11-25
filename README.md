@@ -634,8 +634,9 @@ schema only, or connect with a login that cannot read those tables.
   adds a second line.
 - The server never runs SQL from the agent. SQL it returns (`include_sql`, join path skeletons, index
   advice, the `ALTER TABLE` of `check_relation`) is text.
-- Passwords never leave the Rust side. Without a saved password, or for an SSH server whose host key
-  you have not accepted in the app, the error says what to do; the server never accepts host keys.
+- Passwords never leave the Rust side. When the login fails for want of a saved password (database
+  or SSH) or with a saved one the server refuses, or for an SSH server whose host key you have not
+  accepted in the app, the error says what to do in xdiagram; the server never accepts host keys.
 - It reads the app's files and never writes them. Each call has the query time limit from Settings
   and stops when the client cancels it.
 - Close the MCP client before updating xdiagram: while it runs, `xdiagram-mcp.exe` is in use and the
@@ -654,7 +655,7 @@ npx @modelcontextprotocol/inspector target/debug/xdiagram-mcp.exe --data-dir <fo
 
 `--data-dir` (or `XDIAGRAM_DATA_DIR`) points the server at a folder other than the app's, such as one
 with a test `connections.json`. The PostgreSQL test needs the X-ray workload (see "Checking the
-introspection"); it saves the password in the keychain under a throwaway id and deletes it afterwards.
+introspection"); it saves passwords in the keychain under throwaway ids and deletes them afterwards.
 
 - `src-tauri/crates/xdiagram-mcp/src/server.rs` — the server and the connection tools
 - `src-tauri/crates/xdiagram-mcp/src/access.rs` — which connections, scope, time limits, errors

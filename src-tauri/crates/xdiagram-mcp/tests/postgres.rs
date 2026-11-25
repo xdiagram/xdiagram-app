@@ -4,7 +4,7 @@
 //!
 //!   XDIAGRAM_TEST_PG=postgres://postgres:xdiagram@127.0.0.1:55432/postgres cargo test -p xdiagram-mcp --test postgres -- --ignored
 //!
-//! The password goes to the OS keychain under a throwaway profile id, as the app saves it, and is
+//! Passwords go to the OS keychain under throwaway profile ids, as the app saves them, and are
 //! deleted again when the test ends (also when it fails). Nothing else of the app is touched.
 
 use std::io::{BufRead, BufReader, Write};
@@ -87,17 +87,25 @@ fn postgres_end_to_end() {
         { "id": id, "name": "Docker PG", "engine": "postgres", "host": host, "port": port, "database": db, "user": user,
           "sslMode": "disable", "schemas": [], "mcp": { "enabled": true, "data": "masked" } },
         { "id": format!("{id}-public"), "name": "Public only", "engine": "postgres", "host": host, "port": port, "database": db,
-          "user": user, "sslMode": "disable", "schemas": ["public"], "mcp": { "enabled": true, "data": "schema" } }
+          "user": user, "sslMode": "disable", "schemas": ["public"], "mcp": { "enabled": true, "data": "schema" } },
+        { "id": format!("{id}-nopw"), "name": "No password", "engine": "postgres", "host": host, "port": port, "database": db,
+          "user": user, "sslMode": "disable", "mcp": { "enabled": true } },
+        { "id": format!("{id}-wrong"), "name": "Wrong password", "engine": "postgres", "host": host, "port": port, "database": db,
+          "user": user, "sslMode": "disable", "mcp": { "enabled": true } }
     ]);
     let dir = std::env::temp_dir().join(format!("xd-mcp-pg-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("connections.json"), json!({ "profiles": profiles }).to_string()).unwrap();
 
-    // Saved as the app saves it: bound to the server the connection describes.
-    let profile = ConnectionProfile::from_json(&profiles[0]).unwrap();
-    let _keychain = Keychain(id.clone());
-    secrets::save_bound(&id, &password, &password_binding(&to_connection_input(&profile))).unwrap();
+    // Saved as the app saves it: bound to the server the connection describes. "No password" has
+    // none; "Wrong password" one the server refuses.
+    let mut _keychain = Vec::new();
+    for (i, secret) in [(0, password.as_str()), (1, password.as_str()), (3, "not-the-password")] {
+        let profile = ConnectionProfile::from_json(&profiles[i]).unwrap();
+        _keychain.push(Keychain(profile.id.clone()));
+        secrets::save_bound(&profile.id, secret, &password_binding(&to_connection_input(&profile))).unwrap();
+    }
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_xdiagram-mcp"))
         .arg("--data-dir")
@@ -118,6 +126,15 @@ fn postgres_end_to_end() {
 
     let list = c.ok("list_connections", json!({}));
     assert_eq!(list["connections"][0]["passwordSaved"], true);
+    assert_eq!(list["connections"][2]["passwordSaved"], false);
+
+    // Login failures say what the user can do; other errors do not mention passwords.
+    let (missing, is_err) = c.call("list_tables", json!({ "connection": "No password" }));
+    assert!(is_err && missing.contains("No password is saved for \"No password\""), "{missing}");
+    let (refused, is_err) = c.call("list_tables", json!({ "connection": "Wrong password" }));
+    assert!(is_err && refused.contains("The password saved for \"Wrong password\" was refused"), "{refused}");
+    let (bad, is_err) = c.call("browse_rows", json!({ "connection": "Docker PG", "table": "users", "filter": { "t": "cond", "column": "nope", "op": "eq", "args": ["1"] } }));
+    assert!(is_err && bad.contains("nope") && !bad.contains("password"), "{bad}");
 
     let tables = c.ok("list_tables", json!({ "connection": "Docker PG" }));
     let names: Vec<&str> = tables["tables"].as_array().unwrap().iter().filter_map(|t| t["table"].as_str()).collect();
@@ -130,8 +147,8 @@ fn postgres_end_to_end() {
     assert!(users["rows"].as_array().unwrap().iter().all(|r| r[email] == "[masked: email]"), "{users}");
 
     // The scope of the second connection: public only, and no rows.
-    let (scoped, _) = c.call("list_tables", json!({ "connection": "Public only" }));
-    assert!(!scoped.contains("billing."), "{scoped}");
+    let scoped = c.ok("list_tables", json!({ "connection": "Public only" })).to_string();
+    assert!(scoped.contains("public.users") && !scoped.contains("billing."), "{scoped}");
     let (refused, is_err) = c.call("browse_rows", json!({ "connection": "Public only", "table": "users" }));
     assert!(is_err && refused.contains("schema only"));
 

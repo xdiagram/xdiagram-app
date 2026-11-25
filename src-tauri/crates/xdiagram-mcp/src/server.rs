@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use xdiagram_core::db::{Engine, dispatch};
 use xdiagram_core::profiles::{DataAccess, engine_name};
 
-use crate::access::{Access, Conn, TURN_ON_HINT, password_saved, run_op};
+use crate::access::{Access, Conn, TURN_ON_HINT, password_saved, run_op, ssh_password_saved};
 use crate::path_tools::XrayCache;
 use crate::schema_tools::SchemaCache;
 
@@ -82,6 +82,9 @@ struct ConnectionInfo {
     data: DataAccess,
     #[serde(skip_serializing_if = "Option::is_none")]
     password_saved: Option<bool>,
+    /// Through SSH with a password: whether that one is saved too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ssh_password_saved: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -136,6 +139,7 @@ impl XdiagramServer {
                     schemas: p.schemas.clone(),
                     data: p.mcp.data,
                     password_saved: (!lite).then(|| password_saved(p)),
+                    ssh_password_saved: if lite { None } else { ssh_password_saved(p) },
                 }
             })
             .collect();

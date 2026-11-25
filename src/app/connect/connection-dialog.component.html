@@ -192,7 +192,10 @@
         </label>
         <p class="hint">{{ mcpHint() }}</p>
         @if (draft.engine !== "sqlite" && !rememberPassword) {
-          <p class="hint warn">Agents use the password saved in the keychain: tick “Remember password” above.</p>
+          <p class="hint warn">
+            Agents use the {{ draft.ssh ? "passwords" : "password" }} saved in the keychain: tick “Remember
+            {{ draft.ssh ? "passwords" : "password" }}” above.
+          </p>
         }
       } @else {
         <p class="hint">Agents such as Claude Code then read it through xdiagram-mcp, read-only, without opening the app. Settings → AI agents shows how to set it up.</p>
